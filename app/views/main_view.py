@@ -5,6 +5,7 @@ Contains all widget construction, style helpers, and UI-only logic.
 No API calls, no worker creation, no business state — only signals and
 public methods that the presenter drives.
 """
+import html as _html
 import re
 from pathlib import Path
 
@@ -112,6 +113,55 @@ def _input_style(font_size: int = 12) -> str:
     )
 
 
+# ── Type-badge styles ─────────────────────────────────────────────────────────
+
+_BADGE_QSS = {
+    "playlist": (
+        "background:rgba(0,200,255,18);color:#00aacc;"
+        "border:1px solid rgba(0,200,255,55);border-radius:3px;"
+        "font-size:9px;font-weight:600;padding:1px 5px;letter-spacing:0.5px;"
+    ),
+    "album": (
+        "background:rgba(180,100,255,18);color:#b46eff;"
+        "border:1px solid rgba(180,100,255,55);border-radius:3px;"
+        "font-size:9px;font-weight:600;padding:1px 5px;letter-spacing:0.5px;"
+    ),
+    "artist": (
+        "background:rgba(255,160,50,18);color:#e8900a;"
+        "border:1px solid rgba(255,160,50,55);border-radius:3px;"
+        "font-size:9px;font-weight:600;padding:1px 5px;letter-spacing:0.5px;"
+    ),
+}
+
+_BADGE_LABEL = {"playlist": "PLAYLIST", "album": "ALBUM", "artist": "ARTIST"}
+
+
+# ── Log color helper ──────────────────────────────────────────────────────────
+
+def _log_html(text: str) -> str:
+    """Return an HTML snippet for *text* with the appropriate color."""
+    t = text.strip()
+    if t.startswith("▶") or "Downloading " in t:
+        color = "#00cccc"
+    elif t.startswith("✓"):
+        color = "#00c864"
+    elif t.startswith("Downloaded "):
+        color = "#00c864"
+    elif t.startswith("/") or t.startswith("~") or t.startswith("\\"):
+        color = "#444"
+    elif "expires in" in t or "token" in t.lower():
+        color = "#f0a500"
+    elif t.startswith("⚠") or t.lower().startswith("skipped"):
+        color = "#f06060"
+    else:
+        color = "#777"
+    escaped = _html.escape(text)
+    return (
+        f'<span style="color:{color};font-family:\'SF Mono\',\'Fira Code\','
+        f"monospace;font-size:11px;line-height:1.5;\">{escaped}</span>"
+    )
+
+
 # ── Cover image widget ────────────────────────────────────────────────────────
 
 class CoverLabel(QLabel):
@@ -204,6 +254,13 @@ class LibraryItemWidget(QWidget):
         self._title_lbl.setStyleSheet("font-weight: bold; font-size: 13px;")
         title_row.addWidget(self._title_lbl)
 
+        # Type badge (PLAYLIST / ALBUM / ARTIST)
+        itype = self._item_type(item_data)
+        self._type_badge = QLabel(_BADGE_LABEL.get(itype, ""))
+        self._type_badge.setStyleSheet(_BADGE_QSS.get(itype, ""))
+        self._type_badge.setVisible(bool(_BADGE_LABEL.get(itype)))
+        title_row.addWidget(self._type_badge)
+
         self._badge = QLabel("✓ Downloaded")
         self._badge.setStyleSheet(
             "background: rgba(0,200,100,40); color: #0c6; "
@@ -264,6 +321,27 @@ class LibraryItemWidget(QWidget):
         except Exception:
             pass
         return False
+
+    @staticmethod
+    def _item_type(d) -> str:
+        """Return 'playlist', 'album', or 'artist' for any Tidal model object."""
+        try:
+            from tiddl.core.api.models import Playlist as _P, Album as _A
+            if isinstance(d, _P):
+                return "playlist"
+            if isinstance(d, _A):
+                return "album"
+        except Exception:
+            pass
+        if hasattr(d, "artistTypes") or (
+            not hasattr(d, "title") and not hasattr(d, "numberOfTracks")
+        ):
+            return "artist"
+        if hasattr(d, "numberOfTracks"):
+            return "album"
+        if hasattr(d, "uuid"):
+            return "playlist"
+        return "album"
 
     @staticmethod
     def _cover(d) -> str | None:
@@ -594,12 +672,20 @@ class MainView(QMainWindow):
         # Row 3: log (hidden until a download starts)
         self._log = QTextEdit()
         self._log.setReadOnly(True)
-        self._log.setMaximumHeight(110)
+        self._log.setMaximumHeight(130)
         self._log.setVisible(False)
         self._log.setStyleSheet(
-            "background:#0d0d0d; border:1px solid #1e1e1e; border-radius:4px;"
-            "font-family:monospace; font-size:11px; color:#999;"
+            "QTextEdit{"
+            "background:#0a0a0a;border:1px solid #1e1e1e;border-radius:6px;"
+            "padding:6px 8px;color:#666;}"
+            "QScrollBar:vertical{background:#0a0a0a;width:4px;border-radius:2px;}"
+            "QScrollBar::handle:vertical{background:#252525;border-radius:2px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
         )
+        _lf = QFont("SF Mono")
+        _lf.setStyleHint(QFont.StyleHint.Monospace)
+        _lf.setPointSize(10)
+        self._log.document().setDefaultFont(_lf)
         lay.addWidget(self._log)
 
         return bottom
@@ -720,8 +806,11 @@ class MainView(QMainWindow):
         self._progress_bar.setValue(done)
 
     def append_log(self, text: str) -> None:
-        """Append *text* to the log widget and scroll to the bottom."""
-        self._log.append(text)
+        """Append a color-coded HTML line to the log and scroll to the bottom."""
+        cursor = self._log.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._log.setTextCursor(cursor)
+        self._log.insertHtml(_log_html(text) + "<br>")
         self._log.verticalScrollBar().setValue(
             self._log.verticalScrollBar().maximum()
         )
