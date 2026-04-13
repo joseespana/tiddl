@@ -134,18 +134,32 @@ class CoverLabel(QLabel):
             self._reply = reply
 
     def _loaded(self, reply, size: int) -> None:
-        pm = QPixmap()
-        if pm.loadFromData(reply.readAll()):
-            self.setPixmap(
-                pm.scaled(
-                    size,
-                    size,
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
+        try:
+            pm = QPixmap()
+            if pm.loadFromData(reply.readAll()):
+                self.setPixmap(
+                    pm.scaled(
+                        size,
+                        size,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
                 )
-            )
-        reply.deleteLater()
-        self._reply = None
+        except RuntimeError:
+            # Widget was deleted before the reply arrived (e.g. tab switched).
+            pass
+        finally:
+            reply.deleteLater()
+            self._reply = None
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        """Abort in-flight request when the widget is hidden/removed."""
+        if self._reply is not None:
+            try:
+                self._reply.abort()
+            except RuntimeError:
+                pass
+        super().hideEvent(event)
 
 
 # ── Library row widget ────────────────────────────────────────────────────────

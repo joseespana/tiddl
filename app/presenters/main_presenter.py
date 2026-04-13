@@ -40,6 +40,11 @@ class MainPresenter(QObject):
         self._search_worker: Optional[SearchWorker] = None
         self._search_thread: Optional[QThread] = None
 
+        # Threads that have been asked to stop but haven't finished yet.
+        # We keep Python references here so the C++ QThread isn't destroyed
+        # while still running (which triggers an abort).
+        self._stopping_threads: list = []
+
         # Download manager shared for the whole session
         self._dl_manager = DownloadManager(self)
 
@@ -91,11 +96,37 @@ class MainPresenter(QObject):
         thread.start()
 
     def _stop_worker(self, worker, thread) -> None:
-        """Request interruption of *worker* and quit *thread* if running."""
-        if worker is not None:
-            worker.interrupt()
-        if thread is not None and thread.isRunning():
+        """Request interruption of *worker* and park *thread* in the zombie list.
+
+        We keep a Python reference to every stopping thread in
+        ``_stopping_threads`` so the C++ QThread isn't destroyed while still
+        running.  The reference is released when the thread emits ``finished``.
+        """
+        try:
+            if worker is not None:
+                worker.interrupt()
+        except RuntimeError:
+            pass
+        if thread is None:
+            return
+        try:
+            if not thread.isRunning():
+                return
+        except RuntimeError:
+            return
+        # Park the thread so Python won't GC it before the C++ side exits.
+        self._stopping_threads.append(thread)
+        try:
+            thread.finished.connect(
+                lambda t=thread: self._stopping_threads.remove(t)
+                if t in self._stopping_threads else None
+            )
             thread.quit()
+        except RuntimeError:
+            try:
+                self._stopping_threads.remove(thread)
+            except ValueError:
+                pass
 
     # ── Tab loading ───────────────────────────────────────────────────────────
 
