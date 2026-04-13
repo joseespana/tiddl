@@ -1,3 +1,4 @@
+import os
 from logging import getLogger
 from pathlib import Path
 
@@ -28,8 +29,9 @@ def save_tracks_to_m3u(
         with file.open("w", encoding="utf-8") as f:
             f.write("#EXTM3U\n")
             for track_path, track in tracks_with_path:
+                relative_path = os.path.relpath(track_path, file.parent)
                 f.write(
-                    f"#EXTINF:{track.duration},{track.artist.name if track.artist else ''} - {track.title}\n{track_path}\n"
+                    f"#EXTINF:{track.duration},{track.artist.name if track.artist else ''} - {track.title}\n{relative_path}\n"
                 )
 
             log.debug(f"saved m3u file as '{file}' with {len(tracks_with_path)} tracks")
