@@ -31,6 +31,7 @@ class MainPresenter(QObject):
         self._api = build_api()
         self._current_tab = "playlists"
         self._disk_cache: Optional[DiskCache] = None
+        self._tracks_done: int = 0
 
         # Library/search worker pairs (worker + thread)
         self._lib_worker: Optional[LibraryWorker] = None
@@ -81,8 +82,21 @@ class MainPresenter(QObject):
         self._view.add_item(item, self._disk_cache)
 
     def _on_dl_log_line(self, _task_id: str, line: str) -> None:
-        """Forward a download log line to the view."""
-        self._view.append_log(line)
+        """Parse download log lines and update the status card."""
+        # Parse "Downloaded <title>  <quality>" lines (two spaces before quality)
+        if line.startswith("Downloaded "):
+            import re as _re
+            parts = _re.split(r"  +", line[len("Downloaded "):], maxsplit=1)
+            name = parts[0].strip()
+            quality = parts[1].strip() if len(parts) > 1 else ""
+            # Strip path suffix if quality line has it (e.g. "16-bit, 44.1 kHz /path/to/...")
+            if " /" in quality:
+                quality = quality[:quality.index(" /")].strip()
+            self._tracks_done += 1
+            self._view.set_current_track(name, quality)
+            self._view.set_track_count(self._tracks_done)
+        elif line.startswith("\u25b6 Downloading"):
+            self._view.set_current_track("Downloading\u2026", "")
 
     # ── Worker lifecycle helpers ──────────────────────────────────────────────
 
@@ -208,6 +222,7 @@ class MainPresenter(QObject):
         self._view.show_log()
         self._view.set_download_btn_enabled(False)
         self._view.set_download_btn_text(f"Downloading… (0/{len(urls)})")
+        self._tracks_done = 0
         self._dl_manager.enqueue(
             urls, self._view.get_download_path(), self._view.get_quality()
         )
@@ -224,6 +239,7 @@ class MainPresenter(QObject):
         self._view.show_progress_bar(1)
         self._view.show_log()
         self._view.set_download_btn_enabled(False)
+        self._tracks_done = 0
         self._dl_manager.enqueue(
             [url], self._view.get_download_path(), self._view.get_quality()
         )
@@ -245,9 +261,18 @@ class MainPresenter(QObject):
 
     def _on_all_downloads_done(self) -> None:
         self._view.set_download_btn_enabled(True)
+        self._view.set_download_btn_text("Download Selected")
         self._view.update_select_btn()
-        self._view.append_log("✓ All downloads complete.")
+        self._view.hide_download_status()
         self._rebuild_cache()
+        # If the Downloaded tab is active, reload it so new items appear immediately.
+        if self._current_tab == "downloaded":
+            saved = self._current_tab
+            self._current_tab = ""          # clear sentinel so load_tab doesn't no-op
+            self.load_tab(saved)
+        else:
+            # Refresh badges on whatever tab is showing.
+            pass  # _rebuild_cache already called refresh_badges
 
     # ── Library worker callbacks ──────────────────────────────────────────────
 

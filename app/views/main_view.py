@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QTextEdit,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -669,24 +669,62 @@ class MainView(QMainWindow):
         )
         lay.addWidget(self._progress_bar)
 
-        # Row 3: log (hidden until a download starts)
-        self._log = QTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setMaximumHeight(130)
-        self._log.setVisible(False)
-        self._log.setStyleSheet(
-            "QTextEdit{"
-            "background:#0a0a0a;border:1px solid #1e1e1e;border-radius:6px;"
-            "padding:6px 8px;color:#666;}"
-            "QScrollBar:vertical{background:#0a0a0a;width:4px;border-radius:2px;}"
-            "QScrollBar::handle:vertical{background:#252525;border-radius:2px;}"
-            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+        # Row 3: download status card (hidden until a download starts)
+        self._dl_status_card = QFrame()
+        self._dl_status_card.setVisible(False)
+        self._dl_status_card.setStyleSheet(
+            "background:#111; border:1px solid #1e1e1e; border-radius:6px; padding:0;"
         )
-        _lf = QFont("SF Mono")
-        _lf.setStyleHint(QFont.StyleHint.Monospace)
-        _lf.setPointSize(10)
-        self._log.document().setDefaultFont(_lf)
-        lay.addWidget(self._log)
+        card_lay = QVBoxLayout(self._dl_status_card)
+        card_lay.setContentsMargins(8, 6, 8, 6)
+        card_lay.setSpacing(0)
+
+        # Row A — current track
+        row_a = QHBoxLayout()
+        row_a.setSpacing(8)
+
+        self._dl_arrow = QLabel("↓")
+        self._dl_arrow.setStyleSheet("color:#0ff; font-size:16px; font-weight:bold;")
+        row_a.addWidget(self._dl_arrow)
+
+        self._dl_track_lbl = QLabel("Preparing\u2026")
+        self._dl_track_lbl.setStyleSheet("color:#ddd; font-size:12px;")
+        self._dl_track_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        row_a.addWidget(self._dl_track_lbl)
+
+        self._dl_quality_lbl = QLabel("")
+        self._dl_quality_lbl.setStyleSheet("color:#555; font-size:11px;")
+        row_a.addWidget(self._dl_quality_lbl)
+
+        card_lay.addLayout(row_a)
+
+        # 1px separator
+        sep_line = QFrame()
+        sep_line.setStyleSheet("background:#1e1e1e; max-height:1px;")
+        sep_line.setMaximumHeight(1)
+        card_lay.addWidget(sep_line)
+
+        # Row B — counters
+        row_b = QHBoxLayout()
+        row_b.setSpacing(8)
+
+        self._dl_task_lbl = QLabel("")
+        self._dl_task_lbl.setStyleSheet("color:#777; font-size:11px;")
+        row_b.addWidget(self._dl_task_lbl)
+
+        row_b.addStretch()
+
+        self._dl_count_lbl = QLabel("")
+        self._dl_count_lbl.setStyleSheet(
+            "color:#0c6; font-size:11px; font-weight:bold;"
+        )
+        row_b.addWidget(self._dl_count_lbl)
+
+        card_lay.addLayout(row_b)
+
+        lay.addWidget(self._dl_status_card)
 
         return bottom
 
@@ -794,30 +832,46 @@ class MainView(QMainWindow):
         """Show or hide the Tidal search input panel."""
         self._search_panel.setVisible(visible)
 
-    def show_progress_bar(self, maximum: int) -> None:
-        """Reset and show the progress bar with *maximum* steps."""
-        self._progress_bar.setMaximum(maximum)
+    def show_progress_bar(self, total: int) -> None:
+        """Reset and show the progress bar with *total* steps."""
+        self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(0)
         self._progress_bar.setVisible(True)
+        self._dl_status_card.setVisible(True)
+        self._dl_track_lbl.setText("Preparing\u2026")
+        self._dl_quality_lbl.setText("")
+        self._dl_task_lbl.setText(f"0 / {total} items")
+        self._dl_count_lbl.setText("0 tracks")
 
     def set_download_progress(self, done: int, total: int) -> None:
         """Update the progress bar value."""
         self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(done)
+        self._dl_task_lbl.setText(f"{done} / {total} items")
 
-    def append_log(self, text: str) -> None:
-        """Append a color-coded HTML line to the log and scroll to the bottom."""
-        cursor = self._log.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self._log.setTextCursor(cursor)
-        self._log.insertHtml(_log_html(text) + "<br>")
-        self._log.verticalScrollBar().setValue(
-            self._log.verticalScrollBar().maximum()
-        )
+    def append_log(self, text: str) -> None:  # noqa: ARG002
+        """No-op: log widget replaced by status card."""
+        pass
 
     def show_log(self) -> None:
-        """Make the log widget visible."""
-        self._log.setVisible(True)
+        """No-op: log widget replaced by status card."""
+        pass
+
+    def set_current_track(self, name: str, quality: str = "") -> None:
+        """Show which track is currently downloading."""
+        self._dl_track_lbl.setText(name)
+        self._dl_quality_lbl.setText(quality)
+
+    def set_track_count(self, done: int) -> None:
+        """Update the downloaded track counter."""
+        self._dl_count_lbl.setText(f"{done} track{'s' if done != 1 else ''}")
+
+    def hide_download_status(self) -> None:
+        """Hide the download status card and progress bar after completion."""
+        # Don't hide immediately — leave visible so user can see the final state.
+        self._dl_track_lbl.setText("Done")
+        self._dl_arrow.setText("\u2713")
+        self._dl_arrow.setStyleSheet("color:#0c6; font-size:16px; font-weight:bold;")
 
     def set_download_btn_text(self, text: str) -> None:
         """Set the text of the Download Selected button."""
