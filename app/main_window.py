@@ -1,150 +1,193 @@
 """
 Main application window.
 """
+import re
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QPixmap
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QPushButton, QListWidget, QListWidgetItem,
-    QFileDialog, QComboBox, QProgressBar, QTextEdit,
-    QSplitter, QFrame, QCheckBox, QScrollArea,
-    QAbstractItemView, QSizePolicy, QLineEdit,
+    QLabel, QPushButton, QFileDialog, QComboBox,
+    QProgressBar, QTextEdit, QFrame, QCheckBox,
+    QScrollArea, QLineEdit,
 )
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtCore import QUrl
 
-from app.api_client import build_api, is_authenticated
+from app.api_client import build_api
 from app.workers import LibraryWorker, DownloadWorker
 
 
+# ── Quality options ──────────────────────────────────────────────────────────
+# "max" already auto-falls-back to the best quality each track supports.
 QUALITY_OPTIONS = [
-    ("Max (up to 24-bit/192kHz FLAC)", "max"),
-    ("High (16-bit/44.1kHz FLAC)", "high"),
-    ("Normal (320 kbps M4A)", "normal"),
-    ("Low (96 kbps M4A)", "low"),
+    ("Best Available per track (auto)", "max"),
+    ("FLAC 16-bit / 44.1 kHz  (CD quality)", "high"),
+    ("AAC 320 kbps", "normal"),
+    ("AAC 96 kbps", "low"),
 ]
 
 SIDEBAR_TABS = [
     ("Playlists", "playlists"),
-    ("Albums", "albums"),
-    ("Artists", "artists"),
+    ("Albums",    "albums"),
+    ("Artists",   "artists"),
 ]
 
-ITEM_HEIGHT = 64
+ITEM_HEIGHT = 68
 
+
+def _sanitize(s: str) -> str:
+    return re.sub(r'[\\/:"*?<>|]+', "", s)
+
+
+# ── Cover image ──────────────────────────────────────────────────────────────
 
 class CoverLabel(QLabel):
-    """Loads a cover image from URL asynchronously."""
-
-    _manager: QNetworkAccessManager | None = None
-
     def __init__(self, url: str | None, size: int = 52, parent=None):
         super().__init__(parent)
         self.setFixedSize(size, size)
         self.setStyleSheet("background: #222; border-radius: 4px;")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         if url:
-            full_url = f"https://resources.tidal.com/images/{url.replace('-', '/')}/320x320.jpg"
-            if CoverLabel._manager is None:
-                CoverLabel._manager = QNetworkAccessManager()
-            req = QNetworkAccessManager()
-            reply = req.get(QNetworkRequest(QUrl(full_url)))
-            reply.finished.connect(lambda: self._on_image(reply, size))
+            full = f"https://resources.tidal.com/images/{url.replace('-', '/')}/320x320.jpg"
+            mgr = QNetworkAccessManager(self)
+            reply = mgr.get(QNetworkRequest(QUrl(full)))
+            reply.finished.connect(lambda: self._loaded(reply, size))
             self._reply = reply
-            self._req_mgr = req
 
-    def _on_image(self, reply, size):
-        data = reply.readAll()
+    def _loaded(self, reply, size):
         pm = QPixmap()
-        if pm.loadFromData(data):
-            self.setPixmap(pm.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                     Qt.TransformationMode.SmoothTransformation))
+        if pm.loadFromData(reply.readAll()):
+            self.setPixmap(pm.scaled(size, size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation))
 
+
+# ── Library row ──────────────────────────────────────────────────────────────
 
 class LibraryItemWidget(QWidget):
-    """One row in the library list."""
+    check_changed = Signal()
 
-    def __init__(self, item_data, parent=None):
+    def __init__(self, item_data, download_path: str, parent=None):
         super().__init__(parent)
         self.item_data = item_data
         self.setFixedHeight(ITEM_HEIGHT)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(8, 6, 8, 6)
+        row.setContentsMargins(10, 6, 16, 6)
         row.setSpacing(12)
 
         self.checkbox = QCheckBox()
         self.checkbox.setFixedWidth(20)
+        self.checkbox.stateChanged.connect(self.check_changed)
         row.addWidget(self.checkbox)
 
-        cover_url = self._get_cover(item_data)
-        self.cover = CoverLabel(cover_url, size=52)
-        row.addWidget(self.cover)
+        cover_url = self._cover(item_data)
+        row.addWidget(CoverLabel(cover_url, size=52))
 
         text_col = QVBoxLayout()
-        text_col.setSpacing(2)
+        text_col.setSpacing(3)
 
-        self.title_label = QLabel(self._get_title(item_data))
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 13px;")
-        self.title_label.setWordWrap(False)
-        text_col.addWidget(self.title_label)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
 
-        self.sub_label = QLabel(self._get_subtitle(item_data))
-        self.sub_label.setStyleSheet("color: #888; font-size: 11px;")
-        text_col.addWidget(self.sub_label)
+        self._title_lbl = QLabel(self._title(item_data))
+        self._title_lbl.setStyleSheet("font-weight: bold; font-size: 13px;")
+        title_row.addWidget(self._title_lbl)
+
+        self._badge = QLabel("✓ Downloaded")
+        self._badge.setStyleSheet(
+            "background: rgba(0,200,100,40); color: #0c6; "
+            "border: 1px solid rgba(0,200,100,100); border-radius: 3px; "
+            "font-size: 10px; padding: 1px 6px;"
+        )
+        self._badge.setVisible(False)
+        title_row.addWidget(self._badge)
+        title_row.addStretch()
+        text_col.addLayout(title_row)
+
+        self._sub_lbl = QLabel(self._subtitle(item_data))
+        self._sub_lbl.setStyleSheet("color: #888; font-size: 11px;")
+        text_col.addWidget(self._sub_lbl)
 
         row.addLayout(text_col, 1)
 
-    def is_checked(self):
+        self.refresh_downloaded(download_path)
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def is_checked(self) -> bool:
         return self.checkbox.isChecked()
 
     def get_url(self) -> str:
         d = self.item_data
         if hasattr(d, "uuid"):
             return f"https://tidal.com/playlist/{d.uuid}"
-        elif hasattr(d, "url") and d.url:
+        if hasattr(d, "url") and d.url:
             return d.url
         return ""
 
-    def get_label(self) -> str:
-        return self._get_title(self.item_data)
+    def refresh_downloaded(self, download_path: str):
+        self._badge.setVisible(self._check_downloaded(download_path))
+
+    def _check_downloaded(self, download_path: str) -> bool:
+        if not download_path:
+            return False
+        base = Path(download_path)
+        d = self.item_data
+
+        # Playlist → look for its M3U file
+        if hasattr(d, "uuid"):
+            m3u = base / "m3u" / f"{_sanitize(d.title)}.m3u"
+            return m3u.exists()
+
+        # Album → look for its directory with at least one audio file
+        if hasattr(d, "numberOfTracks") and hasattr(d, "releaseDate"):
+            artist = _sanitize(d.artist.name) if getattr(d, "artist", None) else ""
+            album = _sanitize(d.title)
+            folder = base / artist / album
+            if folder.exists():
+                return any(folder.glob("*.flac")) or any(folder.glob("*.m4a"))
+
+        # Artist → look for their root folder
+        if hasattr(d, "artistTypes") or (hasattr(d, "name") and not hasattr(d, "title")):
+            folder = base / _sanitize(d.name)
+            return folder.exists()
+
+        return False
 
     @staticmethod
-    def _get_cover(d) -> str | None:
-        if hasattr(d, "squareImage") and d.squareImage:
-            return d.squareImage
-        if hasattr(d, "cover") and d.cover:
-            return d.cover
-        if hasattr(d, "picture") and d.picture:
-            return d.picture
+    def _cover(d) -> str | None:
+        for attr in ("squareImage", "cover", "picture"):
+            v = getattr(d, attr, None)
+            if v:
+                return v
         return None
 
     @staticmethod
-    def _get_title(d) -> str:
+    def _title(d) -> str:
         return getattr(d, "title", getattr(d, "name", "Unknown"))
 
     @staticmethod
-    def _get_subtitle(d) -> str:
+    def _subtitle(d) -> str:
         if hasattr(d, "numberOfTracks"):
-            artist = ""
-            if hasattr(d, "artist") and d.artist:
-                artist = f"{d.artist.name} · "
+            artist = (d.artist.name + " · ") if getattr(d, "artist", None) else ""
             return f"{artist}{d.numberOfTracks} tracks"
-        if hasattr(d, "artistTypes"):
+        if hasattr(d, "artistTypes") or not hasattr(d, "title"):
             pop = getattr(d, "popularity", None)
             return f"Popularity: {pop}" if pop else "Artist"
         return ""
 
 
+# ── Main window ──────────────────────────────────────────────────────────────
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("tiddl")
-        self.setMinimumSize(900, 620)
-        self.resize(1100, 700)
+        self.setMinimumSize(900, 640)
+        self.resize(1120, 720)
 
         self.api = build_api()
         self._library_worker: LibraryWorker | None = None
@@ -153,10 +196,10 @@ class MainWindow(QMainWindow):
         self._item_widgets: list[LibraryItemWidget] = []
 
         self._build_ui()
-        self._apply_dark_theme()
+        self._apply_theme()
         self._load_tab("playlists")
 
-    # ── UI Construction ──────────────────────────────────────────────────────
+    # ── Build UI ─────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         central = QWidget()
@@ -165,205 +208,191 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Sidebar ──────────────────────────────────────────────────────────
-        sidebar = QWidget()
-        sidebar.setFixedWidth(190)
-        sidebar.setStyleSheet("background: #111;")
-        sb_layout = QVBoxLayout(sidebar)
-        sb_layout.setContentsMargins(12, 20, 12, 20)
-        sb_layout.setSpacing(4)
+        root.addWidget(self._make_sidebar())
+        root.addWidget(self._make_content(), 1)
+
+    def _make_sidebar(self) -> QWidget:
+        sb = QWidget()
+        sb.setFixedWidth(190)
+        sb.setStyleSheet("background: #111;")
+        lay = QVBoxLayout(sb)
+        lay.setContentsMargins(12, 22, 12, 20)
+        lay.setSpacing(4)
 
         logo = QLabel("tiddl")
-        font = QFont()
-        font.setPointSize(22)
-        font.setBold(True)
-        logo.setFont(font)
-        logo.setStyleSheet("color: #0ff; padding-bottom: 12px;")
-        sb_layout.addWidget(logo)
+        f = QFont(); f.setPointSize(22); f.setBold(True)
+        logo.setFont(f)
+        logo.setStyleSheet("color: #0ff; padding-bottom: 14px;")
+        lay.addWidget(logo)
 
         self._tab_buttons: dict[str, QPushButton] = {}
         for label, key in SIDEBAR_TABS:
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setStyleSheet(self._tab_btn_style())
-            btn.clicked.connect(lambda checked, k=key: self._load_tab(k))
-            sb_layout.addWidget(btn)
+            btn.setStyleSheet(_tab_btn_style())
+            btn.clicked.connect(lambda _, k=key: self._load_tab(k))
+            lay.addWidget(btn)
             self._tab_buttons[key] = btn
 
-        sb_layout.addStretch()
+        lay.addStretch()
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #333;")
-        sb_layout.addWidget(sep)
+        sep.setStyleSheet("color: #2a2a2a;")
+        lay.addWidget(sep)
 
-        logout_btn = QPushButton("Logout")
-        logout_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: none; "
-            "color: #666; text-align: left; padding: 6px 8px; }"
-            "QPushButton:hover { color: #f66; }"
+        logout = QPushButton("Logout")
+        logout.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#555;"
+            "text-align:left;padding:6px 8px;}"
+            "QPushButton:hover{color:#f66;}"
         )
-        logout_btn.clicked.connect(self._logout)
-        sb_layout.addWidget(logout_btn)
+        logout.clicked.connect(self._logout)
+        lay.addWidget(logout)
 
-        root.addWidget(sidebar)
+        return sb
 
-        # ── Content Area ─────────────────────────────────────────────────────
+    def _make_content(self) -> QWidget:
         content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        # Top bar
-        top_bar = QWidget()
-        top_bar.setStyleSheet("background: #181818; border-bottom: 1px solid #2a2a2a;")
-        top_bar.setFixedHeight(52)
-        top_bar_layout = QHBoxLayout(top_bar)
-        top_bar_layout.setContentsMargins(16, 0, 16, 0)
+        # ── Top bar ───────────────────────────────────────────────────────────
+        top = QWidget()
+        top.setFixedHeight(52)
+        top.setStyleSheet("background:#181818; border-bottom:1px solid #2a2a2a;")
+        top_lay = QHBoxLayout(top)
+        top_lay.setContentsMargins(16, 0, 16, 0)
+        top_lay.setSpacing(8)
 
         self._tab_title = QLabel("Playlists")
-        font2 = QFont()
-        font2.setPointSize(15)
-        font2.setBold(True)
-        self._tab_title.setFont(font2)
-        top_bar_layout.addWidget(self._tab_title)
+        f2 = QFont(); f2.setPointSize(15); f2.setBold(True)
+        self._tab_title.setFont(f2)
+        top_lay.addWidget(self._tab_title)
+        top_lay.addStretch()
 
-        top_bar_layout.addStretch()
+        # Select All toggles into Deselect All
+        self._select_btn = QPushButton("Select All")
+        self._select_btn.setCheckable(True)
+        self._select_btn.setStyleSheet(_action_btn_style())
+        self._select_btn.clicked.connect(self._toggle_select_all)
+        top_lay.addWidget(self._select_btn)
 
-        self._select_all_btn = QPushButton("Select All")
-        self._select_all_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #444; "
-            "border-radius: 4px; padding: 4px 12px; color: #aaa; font-size: 12px; }"
-            "QPushButton:hover { border-color: #0ff; color: #0ff; }"
-        )
-        self._select_all_btn.clicked.connect(self._select_all)
-        top_bar_layout.addWidget(self._select_all_btn)
+        lay.addWidget(top)
 
-        self._deselect_btn = QPushButton("Deselect All")
-        self._deselect_btn.setStyleSheet(self._select_all_btn.styleSheet())
-        self._deselect_btn.clicked.connect(self._deselect_all)
-        top_bar_layout.addWidget(self._deselect_btn)
-
-        content_layout.addWidget(top_bar)
-
-        # Library list
+        # ── List ─────────────────────────────────────────────────────────────
         self._list_container = QWidget()
-        self._list_container.setStyleSheet("background: #1a1a1a;")
+        self._list_container.setStyleSheet("background:#1a1a1a;")
         self._list_layout = QVBoxLayout(self._list_container)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_layout.setSpacing(0)
 
         self._loading_label = QLabel("Loading…")
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._loading_label.setStyleSheet("color: #666; font-size: 14px; padding: 40px;")
+        self._loading_label.setStyleSheet("color:#555; font-size:14px; padding:50px;")
         self._list_layout.addWidget(self._loading_label)
         self._list_layout.addStretch()
-        self._loading_label_in_layout = True
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._list_container)
-        scroll.setStyleSheet("QScrollArea { border: none; }")
-        content_layout.addWidget(scroll, 1)
+        scroll.setStyleSheet("QScrollArea{border:none;}")
+        lay.addWidget(scroll, 1)
 
-        # ── Bottom Panel ─────────────────────────────────────────────────────
+        # ── Bottom panel ──────────────────────────────────────────────────────
+        lay.addWidget(self._make_bottom())
+
+        return content
+
+    def _make_bottom(self) -> QWidget:
         bottom = QWidget()
-        bottom.setStyleSheet("background: #141414; border-top: 1px solid #2a2a2a;")
-        bottom_layout = QVBoxLayout(bottom)
-        bottom_layout.setContentsMargins(16, 10, 16, 10)
-        bottom_layout.setSpacing(8)
+        bottom.setStyleSheet("background:#141414; border-top:1px solid #252525;")
+        lay = QVBoxLayout(bottom)
+        lay.setContentsMargins(16, 10, 16, 10)
+        lay.setSpacing(8)
 
-        # Download controls row
-        controls_row = QHBoxLayout()
-        controls_row.setSpacing(10)
+        # Row 1: path + quality + download button
+        row1 = QHBoxLayout()
+        row1.setSpacing(10)
 
-        folder_label = QLabel("Save to:")
-        folder_label.setStyleSheet("color: #888; font-size: 12px;")
-        controls_row.addWidget(folder_label)
+        lbl = QLabel("Save to:")
+        lbl.setStyleSheet("color:#777; font-size:12px;")
+        row1.addWidget(lbl)
 
         self._path_edit = QLineEdit(str(Path.home() / "Music" / "tiddl"))
         self._path_edit.setStyleSheet(
-            "background: #222; border: 1px solid #333; border-radius: 4px; "
-            "padding: 4px 8px; color: #ccc; font-size: 12px;"
+            "background:#222; border:1px solid #333; border-radius:4px;"
+            "padding:4px 8px; color:#ccc; font-size:12px;"
         )
-        self._path_edit.setMinimumWidth(200)
-        controls_row.addWidget(self._path_edit, 1)
+        self._path_edit.setMinimumWidth(180)
+        self._path_edit.textChanged.connect(self._on_path_changed)
+        row1.addWidget(self._path_edit, 1)
 
-        browse_btn = QPushButton("Browse…")
-        browse_btn.setStyleSheet(
-            "QPushButton { background: #222; border: 1px solid #444; border-radius: 4px; "
-            "padding: 4px 12px; color: #aaa; font-size: 12px; }"
-            "QPushButton:hover { border-color: #0ff; color: #0ff; }"
-        )
-        browse_btn.clicked.connect(self._browse_folder)
-        controls_row.addWidget(browse_btn)
+        browse = QPushButton("Browse…")
+        browse.setStyleSheet(_action_btn_style())
+        browse.clicked.connect(self._browse_folder)
+        row1.addWidget(browse)
 
         self._quality_combo = QComboBox()
         for label, val in QUALITY_OPTIONS:
             self._quality_combo.addItem(label, userData=val)
         self._quality_combo.setStyleSheet(
-            "QComboBox { background: #222; border: 1px solid #444; border-radius: 4px; "
-            "padding: 4px 8px; color: #ccc; font-size: 12px; min-width: 200px; }"
+            "QComboBox{background:#222; border:1px solid #333; border-radius:4px;"
+            "padding:4px 8px; color:#ccc; font-size:12px; min-width:240px;}"
+            "QComboBox QAbstractItemView{background:#222; color:#ccc; border:1px solid #444;}"
         )
-        controls_row.addWidget(self._quality_combo)
+        row1.addWidget(self._quality_combo)
 
         self._download_btn = QPushButton("Download Selected")
         self._download_btn.setMinimumHeight(36)
         self._download_btn.setStyleSheet(
-            "QPushButton { background: rgba(0,255,255,45); border: 1px solid rgba(0,255,255,200); "
-            "border-radius: 6px; font-size: 13px; font-weight: bold; padding: 0 20px; }"
-            "QPushButton:hover { background: rgba(0,255,255,75); }"
-            "QPushButton:disabled { background: #222; color: #555; border-color: #333; }"
+            "QPushButton{background:rgba(0,255,255,45);border:1px solid rgba(0,255,255,180);"
+            "border-radius:6px;font-size:13px;font-weight:bold;padding:0 20px;}"
+            "QPushButton:hover{background:rgba(0,255,255,75);}"
+            "QPushButton:disabled{background:#1e1e1e;color:#444;border-color:#2a2a2a;}"
         )
         self._download_btn.clicked.connect(self._start_download)
-        controls_row.addWidget(self._download_btn)
+        row1.addWidget(self._download_btn)
 
-        bottom_layout.addLayout(controls_row)
+        lay.addLayout(row1)
 
-        # Progress row
-        progress_row = QHBoxLayout()
+        # Row 2: progress bar (hidden until download)
         self._progress_bar = QProgressBar()
         self._progress_bar.setVisible(False)
-        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFixedHeight(5)
+        self._progress_bar.setTextVisible(False)
         self._progress_bar.setStyleSheet(
-            "QProgressBar { background: #222; border: none; border-radius: 3px; height: 6px; }"
-            "QProgressBar::chunk { background: #0ff; border-radius: 3px; }"
+            "QProgressBar{background:#1e1e1e;border:none;border-radius:2px;}"
+            "QProgressBar::chunk{background:#0ff;border-radius:2px;}"
         )
-        progress_row.addWidget(self._progress_bar)
-        bottom_layout.addLayout(progress_row)
+        lay.addWidget(self._progress_bar)
 
-        # Log area
+        # Row 3: log (hidden until download)
         self._log = QTextEdit()
         self._log.setReadOnly(True)
-        self._log.setMaximumHeight(120)
-        self._log.setStyleSheet(
-            "background: #0d0d0d; border: 1px solid #222; border-radius: 4px; "
-            "font-family: monospace; font-size: 11px; color: #aaa;"
-        )
+        self._log.setMaximumHeight(110)
         self._log.setVisible(False)
-        bottom_layout.addWidget(self._log)
+        self._log.setStyleSheet(
+            "background:#0d0d0d; border:1px solid #1e1e1e; border-radius:4px;"
+            "font-family:monospace; font-size:11px; color:#999;"
+        )
+        lay.addWidget(self._log)
 
-        content_layout.addWidget(bottom)
-        root.addWidget(content, 1)
+        return bottom
 
-    def _apply_dark_theme(self):
+    def _apply_theme(self):
         self.setStyleSheet(
-            "QMainWindow, QWidget { background: #1a1a1a; color: #ddd; }"
-            "QScrollBar:vertical { background: #1a1a1a; width: 8px; }"
-            "QScrollBar::handle:vertical { background: #333; border-radius: 4px; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QMainWindow,QWidget{background:#1a1a1a;color:#ddd;}"
+            "QScrollBar:vertical{background:#1a1a1a;width:7px;border-radius:3px;}"
+            "QScrollBar::handle:vertical{background:#2e2e2e;border-radius:3px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QCheckBox::indicator{width:16px;height:16px;border-radius:3px;"
+            "border:1px solid #444;background:#1e1e1e;}"
+            "QCheckBox::indicator:checked{background:#0ff;border-color:#0ff;}"
         )
 
-    @staticmethod
-    def _tab_btn_style() -> str:
-        return (
-            "QPushButton { background: transparent; border: none; text-align: left; "
-            "padding: 8px 12px; border-radius: 6px; color: #aaa; font-size: 13px; }"
-            "QPushButton:hover { background: #222; color: #fff; }"
-            "QPushButton:checked { background: rgba(0,255,255,30); color: #0ff; font-weight: bold; }"
-        )
-
-    # ── Tab Loading ──────────────────────────────────────────────────────────
+    # ── Tab loading ───────────────────────────────────────────────────────────
 
     def _load_tab(self, tab: str):
         if self._library_worker and self._library_worker.isRunning():
@@ -375,8 +404,11 @@ class MainWindow(QMainWindow):
         for key, btn in self._tab_buttons.items():
             btn.setChecked(key == tab)
 
+        # Reset select button
+        self._select_btn.setChecked(False)
+        self._select_btn.setText("Select All")
+
         self._clear_list()
-        self._loading_label.setVisible(True)
 
         self._library_worker = LibraryWorker(self.api, tab)
         self._library_worker.item_ready.connect(self._add_item)
@@ -386,60 +418,80 @@ class MainWindow(QMainWindow):
 
     def _clear_list(self):
         self._item_widgets.clear()
-        layout = self._list_layout
-        while layout.count():
-            child = layout.takeAt(0)
+        while self._list_layout.count():
+            child = self._list_layout.takeAt(0)
             w = child.widget()
             if w and w is not self._loading_label:
                 w.deleteLater()
-        # Re-add loading label and stretch
         self._loading_label.setText("Loading…")
-        layout.addWidget(self._loading_label)
-        layout.addStretch()
+        self._loading_label.setVisible(True)
+        self._list_layout.addWidget(self._loading_label)
+        self._list_layout.addStretch()
+        self._update_download_btn()
 
     def _add_item(self, item_data):
-        # Remove loading label from layout on first real item
+        # Hide loading label on first item
         idx = self._list_layout.indexOf(self._loading_label)
         if idx >= 0:
             self._list_layout.takeAt(idx)
             self._loading_label.setVisible(False)
 
-        widget = LibraryItemWidget(item_data)
+        widget = LibraryItemWidget(item_data, self._path_edit.text())
+        widget.check_changed.connect(self._update_download_btn)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #252525;")
+        sep.setStyleSheet("background:#252525; max-height:1px;")
 
-        self._list_layout.addWidget(widget)
-        self._list_layout.addWidget(sep)
+        # Insert before the trailing stretch
+        pos = max(self._list_layout.count() - 1, 0)
+        self._list_layout.insertWidget(pos, widget)
+        self._list_layout.insertWidget(pos + 1, sep)
         self._item_widgets.append(widget)
 
     def _on_library_loaded(self):
         if not self._item_widgets:
-            self._loading_label.setText(f"No {self._current_tab} found in your favorites.")
+            self._loading_label.setText(f"No {self._current_tab} in your favorites.")
             idx = self._list_layout.indexOf(self._loading_label)
             if idx < 0:
-                self._list_layout.addWidget(self._loading_label)
+                self._list_layout.insertWidget(0, self._loading_label)
             self._loading_label.setVisible(True)
 
     def _on_library_error(self, msg: str):
-        self._loading_label.setText(f"Error: {msg}")
+        self._loading_label.setText(f"⚠ {msg}")
         self._loading_label.setVisible(True)
 
-    # ── Selection ────────────────────────────────────────────────────────────
+    # ── Selection ─────────────────────────────────────────────────────────────
 
-    def _select_all(self):
-        for w in self._item_widgets:
-            w.checkbox.setChecked(True)
+    def _toggle_select_all(self, checked: bool):
+        if checked:
+            self._select_btn.setText("Deselect All")
+            for w in self._item_widgets:
+                w.checkbox.setChecked(True)
+        else:
+            self._select_btn.setText("Select All")
+            for w in self._item_widgets:
+                w.checkbox.setChecked(False)
 
-    def _deselect_all(self):
-        for w in self._item_widgets:
-            w.checkbox.setChecked(False)
+    def _update_download_btn(self):
+        n = sum(1 for w in self._item_widgets if w.is_checked())
+        if n:
+            self._download_btn.setText(f"Download Selected  ({n})")
+        else:
+            self._download_btn.setText("Download Selected")
+        # If user manually unchecked everything, reset the toggle button
+        if n == 0 and self._select_btn.isChecked():
+            self._select_btn.blockSignals(True)
+            self._select_btn.setChecked(False)
+            self._select_btn.setText("Select All")
+            self._select_btn.blockSignals(False)
+        elif n == len(self._item_widgets) and self._item_widgets and not self._select_btn.isChecked():
+            self._select_btn.blockSignals(True)
+            self._select_btn.setChecked(True)
+            self._select_btn.setText("Deselect All")
+            self._select_btn.blockSignals(False)
 
-    def _selected_items(self) -> list[LibraryItemWidget]:
-        return [w for w in self._item_widgets if w.is_checked()]
-
-    # ── Download ─────────────────────────────────────────────────────────────
+    # ── Download ──────────────────────────────────────────────────────────────
 
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -448,18 +500,18 @@ class MainWindow(QMainWindow):
         if folder:
             self._path_edit.setText(folder)
 
+    def _on_path_changed(self, path: str):
+        for w in self._item_widgets:
+            w.refresh_downloaded(path)
+
     def _start_download(self):
-        selected = self._selected_items()
+        selected = [w for w in self._item_widgets if w.is_checked()]
         if not selected:
             self._log_msg("⚠ No items selected.")
             self._log.setVisible(True)
             return
 
         urls = [w.get_url() for w in selected if w.get_url()]
-        if not urls:
-            self._log_msg("⚠ Could not build URLs for selected items.")
-            return
-
         download_path = self._path_edit.text().strip()
         quality = self._quality_combo.currentData()
 
@@ -473,34 +525,38 @@ class MainWindow(QMainWindow):
 
         self._download_worker = DownloadWorker(urls, download_path, quality)
         self._download_worker.log_line.connect(self._log_msg)
-        self._download_worker.progress.connect(self._on_download_progress)
+        self._download_worker.progress.connect(self._on_progress)
         self._download_worker.finished_ok.connect(self._on_download_done)
         self._download_worker.error.connect(self._on_download_error)
         self._download_worker.start()
 
     def _log_msg(self, text: str):
         self._log.append(text)
-        sb = self._log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._log.verticalScrollBar().setValue(
+            self._log.verticalScrollBar().maximum()
+        )
 
-    def _on_download_progress(self, done: int, total: int):
+    def _on_progress(self, done: int, total: int):
         self._progress_bar.setValue(done)
         self._download_btn.setText(f"Downloading… ({done}/{total})")
 
     def _on_download_done(self):
         self._download_btn.setEnabled(True)
-        self._download_btn.setText("Download Selected")
-        self._log_msg("\n✓ All downloads complete.")
+        self._update_download_btn()
+        self._log_msg("✓ All downloads complete.")
+        # Refresh badges now that more files exist on disk
+        path = self._path_edit.text()
+        for w in self._item_widgets:
+            w.refresh_downloaded(path)
 
     def _on_download_error(self, msg: str):
         self._download_btn.setEnabled(True)
-        self._download_btn.setText("Download Selected")
-        self._log_msg(f"\n✗ Error: {msg}")
+        self._update_download_btn()
+        self._log_msg(f"✗ Error: {msg}")
 
-    # ── Logout ───────────────────────────────────────────────────────────────
+    # ── Cleanup / Logout ──────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        # Stop any running workers before closing
         for worker in [self._library_worker, self._download_worker]:
             if worker and worker.isRunning():
                 worker.quit()
@@ -516,3 +572,23 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.api = build_api()
             self._load_tab(self._current_tab)
+
+
+# ── Style helpers ─────────────────────────────────────────────────────────────
+
+def _tab_btn_style() -> str:
+    return (
+        "QPushButton{background:transparent;border:none;text-align:left;"
+        "padding:9px 12px;border-radius:6px;color:#999;font-size:13px;}"
+        "QPushButton:hover{background:#1e1e1e;color:#ddd;}"
+        "QPushButton:checked{background:rgba(0,255,255,30);color:#0ff;font-weight:bold;}"
+    )
+
+
+def _action_btn_style() -> str:
+    return (
+        "QPushButton{background:#222;border:1px solid #383838;border-radius:4px;"
+        "padding:4px 12px;color:#aaa;font-size:12px;}"
+        "QPushButton:hover{border-color:#0ff;color:#0ff;}"
+        "QPushButton:checked{background:rgba(0,255,255,25);border-color:#0ff;color:#0ff;}"
+    )
