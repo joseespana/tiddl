@@ -62,11 +62,22 @@ class MainPresenter(QObject):
         self._view.select_all_toggled.connect(self._toggle_select_all)
 
     def _connect_download_manager(self) -> None:
-        self._dl_manager.log_line.connect(
-            lambda _tid, line: self._view.append_log(line)
-        )
+        self._dl_manager.log_line.connect(self._on_dl_log_line)
         self._dl_manager.task_updated.connect(self._on_task_updated)
         self._dl_manager.all_done.connect(self._on_all_downloads_done)
+
+    # ── Thread-safe item / log slots ──────────────────────────────────────────
+    # These are proper QObject methods so Qt uses QueuedConnection when the
+    # emitting worker lives in a different thread, keeping all widget access
+    # on the main thread.
+
+    def _on_item_ready(self, item: object) -> None:
+        """Deliver one library item to the view (always runs in main thread)."""
+        self._view.add_item(item, self._disk_cache)
+
+    def _on_dl_log_line(self, _task_id: str, line: str) -> None:
+        """Forward a download log line to the view."""
+        self._view.append_log(line)
 
     # ── Worker lifecycle helpers ──────────────────────────────────────────────
 
@@ -116,9 +127,7 @@ class MainPresenter(QObject):
         if tab == "downloaded":
             worker = DownloadedWorker(self._api, self._view.get_download_path())
             thread = QThread()
-            worker.item_ready.connect(
-                lambda item: self._view.add_item(item, self._disk_cache)
-            )
+            worker.item_ready.connect(self._on_item_ready)
             worker.finished.connect(self._on_library_loaded)
             worker.error.connect(self._on_library_error)
             self._downloaded_worker = worker
@@ -128,9 +137,7 @@ class MainPresenter(QObject):
 
         worker = LibraryWorker(self._api, tab)
         thread = QThread()
-        worker.item_ready.connect(
-            lambda item: self._view.add_item(item, self._disk_cache)
-        )
+        worker.item_ready.connect(self._on_item_ready)
         worker.finished.connect(self._on_library_loaded)
         worker.error.connect(self._on_library_error)
         self._lib_worker = worker
@@ -145,9 +152,7 @@ class MainPresenter(QObject):
         self._view.set_loading_text(f'Searching "{query}"…')
         worker = SearchWorker(self._api, query, search_type)
         thread = QThread()
-        worker.item_ready.connect(
-            lambda item: self._view.add_item(item, self._disk_cache)
-        )
+        worker.item_ready.connect(self._on_item_ready)
         worker.finished.connect(self._on_library_loaded)
         worker.error.connect(self._on_library_error)
         self._search_worker = worker
@@ -297,9 +302,15 @@ class MainPresenter(QObject):
             (self._downloaded_worker, self._downloaded_thread),
             (self._search_worker, self._search_thread),
         ]:
-            if worker:
-                worker.interrupt()
-            if thread and thread.isRunning():
-                thread.quit()
-                thread.wait(1500)
+            try:
+                if worker:
+                    worker.interrupt()
+            except RuntimeError:
+                pass
+            try:
+                if thread and thread.isRunning():
+                    thread.quit()
+                    thread.wait(1500)
+            except RuntimeError:
+                pass
         self._dl_manager.cancel_all()
