@@ -41,6 +41,69 @@ def _sanitize(s: str) -> str:
     return re.sub(r'[\\/:"*?<>|]+', "", s)
 
 
+def _norm(s: str) -> str:
+    """Lowercase + strip for case-insensitive comparison."""
+    return _sanitize(s).lower().strip()
+
+
+# ── Disk cache ───────────────────────────────────────────────────────────────
+
+class DiskCache:
+    """
+    Scans the download directory once and provides O(1) lookups.
+    Avoids per-item filesystem calls.
+    """
+
+    _SKIP_DIRS = {"m3u", "mixes", "playlists", ".spotlight-v100",
+                  ".fseventsd", ".trashes", ".temporaryitems"}
+
+    def __init__(self, path: str):
+        self.m3u_stems: set[str] = set()          # playlist title → stem.lower
+        self.albums: set[tuple[str, str]] = set()  # (artist_lower, album_lower)
+        self.artists: set[str] = set()             # artist folder.lower
+
+        base = Path(path)
+        if not base.exists():
+            return
+
+        # ── M3U stems (for playlists) ─────────────────────────────────────
+        m3u_dir = base / "m3u"
+        if m3u_dir.exists():
+            self.m3u_stems = {f.stem.lower().strip() for f in m3u_dir.glob("*.m3u")}
+
+        # ── Artist / album folders ────────────────────────────────────────
+        try:
+            for artist_dir in base.iterdir():
+                if not artist_dir.is_dir():
+                    continue
+                if artist_dir.name.lower() in self._SKIP_DIRS:
+                    continue
+                aname = artist_dir.name.lower().strip()
+                found_album = False
+                for album_dir in artist_dir.iterdir():
+                    if album_dir.is_dir():
+                        has_audio = (
+                            any(album_dir.glob("*.flac")) or
+                            any(album_dir.glob("*.m4a"))
+                        )
+                        if has_audio:
+                            self.albums.add((aname, album_dir.name.lower().strip()))
+                            found_album = True
+                if found_album:
+                    self.artists.add(aname)
+        except Exception:
+            pass
+
+    def has_playlist(self, title: str) -> bool:
+        return _norm(title) in self.m3u_stems
+
+    def has_album(self, artist: str, album: str) -> bool:
+        return (_norm(artist), _norm(album)) in self.albums
+
+    def has_artist(self, name: str) -> bool:
+        return _norm(name) in self.artists
+
+
 # ── Cover image ──────────────────────────────────────────────────────────────
 
 class CoverLabel(QLabel):
@@ -69,7 +132,7 @@ class CoverLabel(QLabel):
 class LibraryItemWidget(QWidget):
     check_changed = Signal()
 
-    def __init__(self, item_data, download_path: str, parent=None):
+    def __init__(self, item_data, cache: "DiskCache | None" = None, parent=None):
         super().__init__(parent)
         self.item_data = item_data
         self.setFixedHeight(ITEM_HEIGHT)
@@ -113,7 +176,7 @@ class LibraryItemWidget(QWidget):
 
         row.addLayout(text_col, 1)
 
-        self.refresh_downloaded(download_path)
+        self.refresh_downloaded(cache)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -128,33 +191,29 @@ class LibraryItemWidget(QWidget):
             return d.url
         return ""
 
-    def refresh_downloaded(self, download_path: str):
-        self._badge.setVisible(self._check_downloaded(download_path))
+    def refresh_downloaded(self, cache: "DiskCache | None"):
+        self._badge.setVisible(self._check_downloaded(cache))
 
-    def _check_downloaded(self, download_path: str) -> bool:
-        if not download_path:
+    def _check_downloaded(self, cache: "DiskCache | None") -> bool:
+        if cache is None:
             return False
-        base = Path(download_path)
         d = self.item_data
+        try:
+            from tiddl.core.api.models import Playlist as TPlaylist, Album as TAlbum
 
-        # Playlist → look for its M3U file
-        if hasattr(d, "uuid"):
-            m3u = base / "m3u" / f"{_sanitize(d.title)}.m3u"
-            return m3u.exists()
+            if isinstance(d, TPlaylist):
+                return cache.has_playlist(d.title)
 
-        # Album → look for its directory with at least one audio file
-        if hasattr(d, "numberOfTracks") and hasattr(d, "releaseDate"):
-            artist = _sanitize(d.artist.name) if getattr(d, "artist", None) else ""
-            album = _sanitize(d.title)
-            folder = base / artist / album
-            if folder.exists():
-                return any(folder.glob("*.flac")) or any(folder.glob("*.m4a"))
+            if isinstance(d, TAlbum):
+                artist = d.artist.name if getattr(d, "artist", None) else ""
+                return cache.has_album(artist, d.title)
 
-        # Artist → look for their root folder
-        if hasattr(d, "artistTypes") or (hasattr(d, "name") and not hasattr(d, "title")):
-            folder = base / _sanitize(d.name)
-            return folder.exists()
-
+            # Artist — has "name" but no "title"
+            name = getattr(d, "name", None)
+            if name:
+                return cache.has_artist(name)
+        except Exception:
+            pass
         return False
 
     @staticmethod
@@ -194,9 +253,11 @@ class MainWindow(QMainWindow):
         self._download_worker: DownloadWorker | None = None
         self._current_tab = "playlists"
         self._item_widgets: list[LibraryItemWidget] = []
+        self._disk_cache: DiskCache | None = None
 
         self._build_ui()
         self._apply_theme()
+        self._rebuild_cache()
         self._load_tab("playlists")
 
     # ── Build UI ─────────────────────────────────────────────────────────────
@@ -436,7 +497,7 @@ class MainWindow(QMainWindow):
             self._list_layout.takeAt(idx)
             self._loading_label.setVisible(False)
 
-        widget = LibraryItemWidget(item_data, self._path_edit.text())
+        widget = LibraryItemWidget(item_data, self._disk_cache)
         widget.check_changed.connect(self._update_download_btn)
 
         sep = QFrame()
@@ -500,9 +561,13 @@ class MainWindow(QMainWindow):
         if folder:
             self._path_edit.setText(folder)
 
-    def _on_path_changed(self, path: str):
+    def _rebuild_cache(self):
+        self._disk_cache = DiskCache(self._path_edit.text())
         for w in self._item_widgets:
-            w.refresh_downloaded(path)
+            w.refresh_downloaded(self._disk_cache)
+
+    def _on_path_changed(self, _path: str):
+        self._rebuild_cache()
 
     def _start_download(self):
         selected = [w for w in self._item_widgets if w.is_checked()]
@@ -544,10 +609,7 @@ class MainWindow(QMainWindow):
         self._download_btn.setEnabled(True)
         self._update_download_btn()
         self._log_msg("✓ All downloads complete.")
-        # Refresh badges now that more files exist on disk
-        path = self._path_edit.text()
-        for w in self._item_widgets:
-            w.refresh_downloaded(path)
+        self._rebuild_cache()   # refresh badges with updated disk state
 
     def _on_download_error(self, msg: str):
         self._download_btn.setEnabled(True)
