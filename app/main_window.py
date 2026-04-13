@@ -3,6 +3,7 @@ Main application window.
 """
 import re
 from pathlib import Path
+from app.workers import load_index
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QPixmap
@@ -58,13 +59,21 @@ class DiskCache:
                   ".fseventsd", ".trashes", ".temporaryitems"}
 
     def __init__(self, path: str):
-        self.m3u_stems: set[str] = set()          # playlist title → stem.lower
+        self.m3u_stems: set[str] = set()          # playlist title stem lowered
         self.albums: set[tuple[str, str]] = set()  # (artist_lower, album_lower)
-        self.artists: set[str] = set()             # artist folder.lower
+        self.artists: set[str] = set()             # artist folder lowered
+        # UUID-based index (reliable even after title changes)
+        self.pl_uuids: set[str] = set()
+        self.album_ids: set[str] = set()
 
         base = Path(path)
         if not base.exists():
             return
+
+        # ── Local index (UUID/ID based) ───────────────────────────────────
+        idx = load_index(path)
+        self.pl_uuids  = set(idx.get("playlist", []))
+        self.album_ids = set(str(i) for i in idx.get("album", []))
 
         # ── M3U stems (for playlists) ─────────────────────────────────────
         m3u_dir = base / "m3u"
@@ -94,10 +103,14 @@ class DiskCache:
         except Exception:
             pass
 
-    def has_playlist(self, title: str) -> bool:
+    def has_playlist(self, title: str, uuid: str = "") -> bool:
+        if uuid and uuid in self.pl_uuids:
+            return True
         return _norm(title) in self.m3u_stems
 
-    def has_album(self, artist: str, album: str) -> bool:
+    def has_album(self, artist: str, album: str, album_id: str = "") -> bool:
+        if album_id and str(album_id) in self.album_ids:
+            return True
         return (_norm(artist), _norm(album)) in self.albums
 
     def has_artist(self, name: str) -> bool:
@@ -202,13 +215,13 @@ class LibraryItemWidget(QWidget):
             from tiddl.core.api.models import Playlist as TPlaylist, Album as TAlbum
 
             if isinstance(d, TPlaylist):
-                return cache.has_playlist(d.title)
+                return cache.has_playlist(d.title, uuid=d.uuid)
 
             if isinstance(d, TAlbum):
                 artist = d.artist.name if getattr(d, "artist", None) else ""
-                return cache.has_album(artist, d.title)
+                return cache.has_album(artist, d.title, album_id=str(d.id))
 
-            # Artist — has "name" but no "title"
+            # Artist
             name = getattr(d, "name", None)
             if name:
                 return cache.has_artist(name)

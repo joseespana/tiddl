@@ -1,23 +1,59 @@
 """
 Background workers (QThread) for library loading and downloading.
 """
+import json
+import re
+import shutil
 import subprocess
-import sys
+from pathlib import Path
 from typing import Literal
 
 from PySide6.QtCore import QThread, Signal
 
 from tiddl.core.api.api import TidalAPI
-from tiddl.core.api.models import Playlist, Album, Artist
 from tiddl.core.api.models.base import Favorites
 
 LibraryTab = Literal["playlists", "albums", "artists"]
+
+# Local index file stored inside the download folder.
+# Tracks which Tidal UUIDs / IDs have been downloaded so badges
+# work even when playlist/album titles change on Tidal.
+INDEX_FILENAME = ".tiddl_index.json"
+
+
+def load_index(download_path: str) -> dict:
+    f = Path(download_path) / INDEX_FILENAME
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return {}
+
+
+def save_index(download_path: str, index: dict):
+    f = Path(download_path) / INDEX_FILENAME
+    try:
+        f.write_text(json.dumps(index, indent=2))
+    except Exception:
+        pass
+
+
+def record_downloaded(download_path: str, url: str):
+    """Add a Tidal URL's resource ID to the local index."""
+    m = re.search(r'(playlist|album|artist)/([a-zA-Z0-9\-]+)', url)
+    if not m:
+        return
+    rtype, rid = m.groups()
+    index = load_index(download_path)
+    bucket = index.setdefault(rtype, [])
+    if rid not in bucket:
+        bucket.append(rid)
+    save_index(download_path, index)
 
 
 class LibraryWorker(QThread):
     """Loads user's playlists / albums / artists from Tidal API."""
 
-    item_ready = Signal(object)   # emits Playlist | Album | Artist
+    item_ready = Signal(object)
     finished_ok = Signal()
     error = Signal(str)
 
@@ -71,11 +107,11 @@ class DownloadWorker(QThread):
         self.quality = quality
 
     def run(self):
+        tiddl_bin = shutil.which("tiddl") or "tiddl"
         total = len(self.urls)
+
         for idx, url in enumerate(self.urls, 1):
             self.log_line.emit(f"\n▶ Downloading {url}")
-            import shutil
-            tiddl_bin = shutil.which("tiddl") or "tiddl"
             cmd = [
                 tiddl_bin,
                 "download",
@@ -100,6 +136,11 @@ class DownloadWorker(QThread):
             except Exception as e:
                 self.error.emit(str(e))
                 return
+
+            # Record UUID in local index so detection works even if title changes
+            if proc.returncode == 0:
+                record_downloaded(self.download_path, url)
+
             self.progress.emit(idx, total)
 
         self.finished_ok.emit()
