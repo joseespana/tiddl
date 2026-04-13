@@ -74,8 +74,10 @@ class DownloadWorker(QThread):
         total = len(self.urls)
         for idx, url in enumerate(self.urls, 1):
             self.log_line.emit(f"\n▶ Downloading {url}")
+            import shutil
+            tiddl_bin = shutil.which("tiddl") or "tiddl"
             cmd = [
-                sys.executable, "-m", "tiddl",
+                tiddl_bin,
                 "download",
                 "-q", self.quality,
                 "-p", self.download_path,
