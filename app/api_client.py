@@ -44,4 +44,6 @@ def build_api() -> TidalAPI:
 
 
 def is_authenticated() -> bool:
-    return TokenManager().is_authenticated()
+    tm = TokenManager()
+    tm.load_from_disk()
+    return tm.is_authenticated()
