@@ -320,7 +320,7 @@ class MainWindow(QMainWindow):
         lbl.setStyleSheet("color:#777; font-size:12px;")
         row1.addWidget(lbl)
 
-        self._path_edit = QLineEdit(str(Path.home() / "Music" / "tiddl"))
+        self._path_edit = QLineEdit(_default_download_path())
         self._path_edit.setStyleSheet(
             "background:#222; border:1px solid #333; border-radius:4px;"
             "padding:4px 8px; color:#ccc; font-size:12px;"
@@ -592,3 +592,15 @@ def _action_btn_style() -> str:
         "QPushButton:hover{border-color:#0ff;color:#0ff;}"
         "QPushButton:checked{background:rgba(0,255,255,25);border-color:#0ff;color:#0ff;}"
     )
+
+
+def _default_download_path() -> str:
+    """Read download_path from ~/.tiddl/config.toml, fall back to ~/Music/tiddl."""
+    try:
+        from tiddl.cli.config import CONFIG
+        p = CONFIG.download.download_path
+        if p:
+            return str(p)
+    except Exception:
+        pass
+    return str(Path.home() / "Music" / "tiddl")
