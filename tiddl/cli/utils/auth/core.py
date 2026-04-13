@@ -27,5 +27,6 @@ def load_auth_data(file: Path = AUTH_DATA_FILE) -> AuthData:
 def save_auth_data(auth_data: AuthData, file: Path = AUTH_DATA_FILE):
     log.debug(f"saving to '{file}'")
 
+    file.parent.mkdir(parents=True, exist_ok=True)
     with file.open("w") as f:
         f.write(auth_data.model_dump_json())

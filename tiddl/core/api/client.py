@@ -19,7 +19,7 @@ T = TypeVar("T", bound=BaseModel)
 
 API_URL = "https://api.tidal.com/v1"
 MAX_RETRIES = 5
-RETRY_DELAY = 2
+RETRY_DELAY = 0.5
 
 log = getLogger(__name__)
 
@@ -139,6 +139,15 @@ class TidalClient:
 
         if res.status_code != 200:
             log.error(f"{endpoint=}, {params=}, {data=}")
-            raise ApiError(**data)
+            try:
+                raise ApiError(**data)
+            except TypeError:
+                raise ApiError(
+                    status=res.status_code,
+                    subStatus=str(data.get("subStatus", "0")),
+                    userMessage=str(
+                        data.get("userMessage", data.get("message", "Unknown API error"))
+                    ),
+                )
 
         return model.model_validate(data)

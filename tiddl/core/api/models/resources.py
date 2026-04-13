@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 TrackQuality = Literal["LOW", "HIGH", "LOSSLESS", "HI_RES_LOSSLESS"]
 
@@ -79,7 +79,6 @@ class Video(BaseModel):
     title: str
     volumeNumber: int
     trackNumber: int
-    streamStartDate: Optional[datetime] = None
     imagePath: Optional[str] = None
     imageId: Optional[str] = None
     vibrantColor: Optional[str] = None
@@ -153,7 +152,7 @@ class Playlist(BaseModel):
     title: str
     numberOfTracks: int
     numberOfVideos: int
-    creator: Creator | Dict[Any, Any]
+    creator: Optional[Creator] = None
     description: Optional[str] = None
     duration: int
     lastUpdated: str
@@ -166,6 +165,13 @@ class Playlist(BaseModel):
     squareImage: str
     promotedArtists: List[Album.Artist]
     lastItemAddedAt: Optional[str] = None
+
+    @field_validator("creator", mode="before")
+    @classmethod
+    def _parse_creator(cls, v: Any) -> Any:
+        if isinstance(v, dict) and "id" not in v:
+            return None
+        return v
 
 
 class Artist(BaseModel):
@@ -188,7 +194,8 @@ class Artist(BaseModel):
 
     id: int
     name: str
-    type: Literal["MAIN", "FEATURED"]
+    # type is absent in search results and optional in some API responses
+    type: Optional[Literal["MAIN", "FEATURED"]] = None
     artistTypes: Optional[List[Literal["ARTIST", "CONTRIBUTOR"]]] = None
     url: Optional[str] = None
     picture: Optional[str] = None

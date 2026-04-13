@@ -1,146 +1,29 @@
 """
-Background workers (QThread) for library loading and downloading.
+Compatibility shim — re-exports from the refactored worker modules.
+
+All public names from the original workers.py are preserved here so that
+any existing import of ``app.workers`` continues to work without changes.
 """
-import json
-import re
-import shutil
-import subprocess
-from pathlib import Path
-from typing import Literal
+from app.worker_index import (
+    load_index,
+    save_index,
+    record_downloaded,
+    INDEX_FILENAME,
+    _TIDAL_URL_RE,
+)
+from app.worker_library import LibraryWorker
+from app.worker_downloaded import DownloadedWorker
+from app.worker_search import SearchWorker
+from app.worker_download import DownloadWorker
 
-from PySide6.QtCore import QThread, Signal
-
-from tiddl.core.api.api import TidalAPI
-from tiddl.core.api.models.base import Favorites
-
-LibraryTab = Literal["playlists", "albums", "artists"]
-
-# Local index file stored inside the download folder.
-# Tracks which Tidal UUIDs / IDs have been downloaded so badges
-# work even when playlist/album titles change on Tidal.
-INDEX_FILENAME = ".tiddl_index.json"
-
-
-def load_index(download_path: str) -> dict:
-    f = Path(download_path) / INDEX_FILENAME
-    try:
-        return json.loads(f.read_text())
-    except Exception:
-        return {}
-
-
-def save_index(download_path: str, index: dict):
-    f = Path(download_path) / INDEX_FILENAME
-    try:
-        f.write_text(json.dumps(index, indent=2))
-    except Exception:
-        pass
-
-
-def record_downloaded(download_path: str, url: str):
-    """Add a Tidal URL's resource ID to the local index."""
-    m = re.search(r'(playlist|album|artist)/([a-zA-Z0-9\-]+)', url)
-    if not m:
-        return
-    rtype, rid = m.groups()
-    index = load_index(download_path)
-    bucket = index.setdefault(rtype, [])
-    if rid not in bucket:
-        bucket.append(rid)
-    save_index(download_path, index)
-
-
-class LibraryWorker(QThread):
-    """Loads user's playlists / albums / artists from Tidal API."""
-
-    item_ready = Signal(object)
-    finished_ok = Signal()
-    error = Signal(str)
-
-    def __init__(self, api: TidalAPI, tab: LibraryTab):
-        super().__init__()
-        self.api = api
-        self.tab = tab
-
-    def run(self):
-        try:
-            favorites: Favorites = self.api.get_favorites()
-
-            if self.tab == "playlists":
-                for uuid in favorites.PLAYLIST:
-                    pl = self.api.get_playlist(playlist_uuid=uuid)
-                    self.item_ready.emit(pl)
-
-            elif self.tab == "albums":
-                for album_id in favorites.ALBUM:
-                    try:
-                        al = self.api.get_album(album_id=album_id)
-                        self.item_ready.emit(al)
-                    except Exception:
-                        pass
-
-            elif self.tab == "artists":
-                for artist_id in favorites.ARTIST:
-                    try:
-                        ar = self.api.get_artist(artist_id=artist_id)
-                        self.item_ready.emit(ar)
-                    except Exception:
-                        pass
-
-            self.finished_ok.emit()
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class DownloadWorker(QThread):
-    """Runs `tiddl download url` for each selected resource URL."""
-
-    log_line = Signal(str)
-    progress = Signal(int, int)   # (done, total)
-    finished_ok = Signal()
-    error = Signal(str)
-
-    def __init__(self, urls: list[str], download_path: str, quality: str):
-        super().__init__()
-        self.urls = urls
-        self.download_path = download_path
-        self.quality = quality
-
-    def run(self):
-        tiddl_bin = shutil.which("tiddl") or "tiddl"
-        total = len(self.urls)
-
-        for idx, url in enumerate(self.urls, 1):
-            self.log_line.emit(f"\n▶ Downloading {url}")
-            cmd = [
-                tiddl_bin,
-                "download",
-                "-q", self.quality,
-                "-p", self.download_path,
-                "url", url,
-            ]
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                for line in proc.stdout:
-                    line = line.rstrip()
-                    if line:
-                        self.log_line.emit(line)
-                proc.wait()
-            except Exception as e:
-                self.error.emit(str(e))
-                return
-
-            # Record UUID in local index so detection works even if title changes
-            if proc.returncode == 0:
-                record_downloaded(self.download_path, url)
-
-            self.progress.emit(idx, total)
-
-        self.finished_ok.emit()
+__all__ = [
+    "load_index",
+    "save_index",
+    "record_downloaded",
+    "INDEX_FILENAME",
+    "_TIDAL_URL_RE",
+    "LibraryWorker",
+    "DownloadedWorker",
+    "SearchWorker",
+    "DownloadWorker",
+]

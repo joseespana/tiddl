@@ -76,6 +76,11 @@ def parse_track_stream(track_stream: TrackStream) -> tuple[list[str], str]:
         case "application/dash+xml":
             urls, codecs = parse_manifest_XML(decoded_manifest)
 
+        case _:
+            raise ValueError(
+                f"Unsupported manifest type: {track_stream.manifestMimeType!r}"
+            )
+
     if codecs == "flac":
         file_extension = ".flac"
         if track_stream.audioQuality == "HI_RES_LOSSLESS":

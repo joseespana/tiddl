@@ -25,6 +25,7 @@ class AuthWindow(QDialog):
 
         self.auth_api = AuthAPI()
         self._device_resp = None
+        self._auth_expires_at = 0
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_auth)
 
@@ -122,6 +123,7 @@ class AuthWindow(QDialog):
             self._action_btn.setText("Connect with Tidal")
             return
 
+        self._auth_expires_at = time() + self._device_resp.expiresIn
         self._code_box.setText(self._device_resp.userCode)
         self._url_btn.setText(self._device_resp.verificationUriComplete)
         self._code_frame.setVisible(True)
@@ -139,6 +141,14 @@ class AuthWindow(QDialog):
 
     def _poll_auth(self):
         if not self._device_resp:
+            return
+        if time() > self._auth_expires_at:
+            self._poll_timer.stop()
+            self._status_label.setText("Authorization timed out. Please try again.")
+            self._action_btn.setEnabled(True)
+            self._action_btn.setText("Connect with Tidal")
+            self._code_frame.setVisible(False)
+            self._device_resp = None
             return
         try:
             resp = self.auth_api.get_auth(self._device_resp.deviceCode)
