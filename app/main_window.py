@@ -69,7 +69,7 @@ class DiskCache:
         # ── M3U stems (for playlists) ─────────────────────────────────────
         m3u_dir = base / "m3u"
         if m3u_dir.exists():
-            self.m3u_stems = {f.stem.lower().strip() for f in m3u_dir.glob("*.m3u")}
+            self.m3u_stems = {_norm(f.stem) for f in m3u_dir.glob("*.m3u")}
 
         # ── Artist / album folders ────────────────────────────────────────
         try:
@@ -78,7 +78,7 @@ class DiskCache:
                     continue
                 if artist_dir.name.lower() in self._SKIP_DIRS:
                     continue
-                aname = artist_dir.name.lower().strip()
+                aname = _norm(artist_dir.name)
                 found_album = False
                 for album_dir in artist_dir.iterdir():
                     if album_dir.is_dir():
@@ -87,7 +87,7 @@ class DiskCache:
                             any(album_dir.glob("*.m4a"))
                         )
                         if has_audio:
-                            self.albums.add((aname, album_dir.name.lower().strip()))
+                            self.albums.add((aname, _norm(album_dir.name)))
                             found_album = True
                 if found_album:
                     self.artists.add(aname)
