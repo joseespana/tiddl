@@ -32,6 +32,10 @@ class DownloadTask:
     status: DownloadStatus = DownloadStatus.QUEUED
     log_lines: List[str] = field(default_factory=list)
     error: str = ""
+    # When True, pass -r (--rewrite-metadata) to tiddl so existing
+    # audio files are kept but their tags are refreshed from the API.
+    # Used by the "Sync Metadata" flow.
+    rewrite_metadata: bool = False
 
 
 class _RunnableSignals(QObject):
@@ -64,8 +68,11 @@ class _DownloadRunnable(QRunnable):
             tiddl_bin, "download",
             "-q", self.task.quality,
             "-p", self.task.download_path,
-            "url", self.task.url,
         ]
+        if self.task.rewrite_metadata:
+            # Re-tag existing files without re-downloading audio.
+            cmd.append("-r")
+        cmd += ["url", self.task.url]
         proc = None
         try:
             proc = subprocess.Popen(
@@ -136,6 +143,7 @@ class DownloadManager(QObject):
         urls: List[str],
         download_path: str,
         quality: str,
+        rewrite_metadata: bool = False,
     ) -> List[str]:
         """Add *urls* to the queue and start up to MAX_CONCURRENT immediately.
 
@@ -143,13 +151,21 @@ class DownloadManager(QObject):
             urls: Tidal URLs to download.
             download_path: Destination folder.
             quality: Quality flag (``"max"``, ``"high"``, ``"normal"``, ``"low"``).
+            rewrite_metadata: When True, passes ``-r`` to tiddl so each
+                URL's existing audio files are kept and only their tags
+                get refreshed. Used by the Sync Metadata flow.
 
         Returns:
             List of task IDs in the same order as *urls*.
         """
         ids = []
         for url in urls:
-            task = DownloadTask(url=url, download_path=download_path, quality=quality)
+            task = DownloadTask(
+                url=url,
+                download_path=download_path,
+                quality=quality,
+                rewrite_metadata=rewrite_metadata,
+            )
             self._tasks[task.id] = task
             ids.append(task.id)
             self._start_runnable(task)

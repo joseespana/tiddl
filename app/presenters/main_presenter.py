@@ -74,6 +74,7 @@ class MainPresenter(QObject):
         self._view.filter_changed.connect(self._filter_list)
         self._view.select_all_toggled.connect(self._toggle_select_all)
         self._view.resync_requested.connect(self._resync)
+        self._view.sync_metadata_requested.connect(self._sync_metadata)
         self._view.detail_requested.connect(self._open_detail)
 
     def _connect_download_manager(self) -> None:
@@ -416,6 +417,62 @@ class MainPresenter(QObject):
             saved = self._current_tab
             self._current_tab = ""
             self.load_tab(saved)
+
+    def _sync_metadata(self) -> None:
+        """Re-write tags on every already-downloaded item, no audio refetch.
+
+        Iterates every URL stored in the local SQLite index and queues
+        it through the DownloadManager with ``rewrite_metadata=True``.
+        tiddl's ``--rewrite-metadata`` flag keeps the existing audio
+        files and only refreshes GENRE / ARTIST / DATE / etc. from the
+        API — so this is cheap per file and lets users back-fill tags
+        added by newer versions (like the v2-sourced GENRE tag).
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        try:
+            from app.models.index_db import IndexDB
+            with IndexDB(self._view.get_download_path()) as db:
+                urls = db.list_urls()
+        except Exception as exc:
+            log.warning("sync-metadata: reading index failed: %s", exc)
+            QMessageBox.warning(
+                self._view, "Sync Metadata",
+                f"Couldn't read the local index:\n{exc}",
+            )
+            return
+
+        if not urls:
+            QMessageBox.information(
+                self._view, "Sync Metadata",
+                "Nothing to sync — the local index is empty.",
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self._view,
+            "Sync Metadata",
+            f"Re-tag {len(urls)} downloaded item(s)?\n\n"
+            "Existing audio files stay on disk — only GENRE, DATE, "
+            "ARTIST and other tags are refreshed from Tidal. "
+            "This can take a few minutes for large libraries.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        self._dl_manager.clear()
+        self._tracks_done = 0
+        self._view.show_progress_bar(len(urls))
+        self._view.set_download_btn_enabled(False)
+        self._view.set_download_btn_text(
+            f"Syncing metadata… (0/{len(urls)})"
+        )
+        self._dl_manager.enqueue(
+            urls,
+            self._view.get_download_path(),
+            self._view.get_quality(),
+            rewrite_metadata=True,
+        )
 
     # ── Folder browse ─────────────────────────────────────────────────────────
 

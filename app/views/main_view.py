@@ -591,6 +591,7 @@ class MainView(QMainWindow):
     filter_changed = Signal(str)
     select_all_toggled = Signal(bool)
     resync_requested = Signal()
+    sync_metadata_requested = Signal()
     detail_requested = Signal(CardVM)
 
     def __init__(self) -> None:
@@ -713,6 +714,20 @@ class MainView(QMainWindow):
         self._resync_btn.setStyleSheet(_action_btn_style())
         self._resync_btn.clicked.connect(self.resync_requested)
         top_lay.addWidget(self._resync_btn)
+
+        # Visible only on the Downloaded tab — re-tags existing files
+        # (fetches fresh GENRE/metadata from Tidal without re-downloading
+        # audio).
+        self._sync_meta_btn = QPushButton("⟳ Sync Metadata")
+        self._sync_meta_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sync_meta_btn.setToolTip(
+            "Re-write tags (GENRE, artist, date…) on every downloaded item "
+            "using fresh data from Tidal. Does not re-download audio."
+        )
+        self._sync_meta_btn.setStyleSheet(_action_btn_style())
+        self._sync_meta_btn.setVisible(False)
+        self._sync_meta_btn.clicked.connect(self.sync_metadata_requested)
+        top_lay.addWidget(self._sync_meta_btn)
 
         self._select_btn = QPushButton("Select All")
         self._select_btn.setCheckable(True)
@@ -1137,8 +1152,10 @@ class MainView(QMainWindow):
         self._search_box.blockSignals(False)
         # Playlist sub-tabs are only meaningful on the Playlists tab
         self._pl_subtabs.setVisible(tab == "playlists")
-        # Downloaded dashboard strip only on the Downloaded tab
+        # Downloaded dashboard strip + Sync Metadata button only on the
+        # Downloaded tab.
         self._dl_dashboard.setVisible(tab == "downloaded")
+        self._sync_meta_btn.setVisible(tab == "downloaded")
         if tab == "playlists":
             # Reset to "All" when (re)entering the tab
             for k, b in self._pl_subtab_btns.items():
