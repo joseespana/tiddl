@@ -1,6 +1,6 @@
 # Tidal Downloader
 
-Download tracks and videos from Tidal with max quality! `tiddl` is CLI app written in Python.
+Download tracks and videos from Tidal with max quality! `tiddl` ships with **two interfaces** — a CLI (original) and a modern desktop GUI built with PySide6. Pick whichever fits your workflow.
 
 > [!WARNING]
 > `This app is for personal use only and is not affiliated with Tidal. Users must ensure their use complies with Tidal's terms of service and local copyright laws. Downloaded tracks are for personal use and may not be shared or redistributed. The developer assumes no responsibility for misuse of this app.`
@@ -37,6 +37,59 @@ pip install tiddl
 **coming soon**
 
 # Usage
+
+You have two ways to run tiddl:
+
+| Mode | Command | Best for |
+| --- | --- | --- |
+| **CLI** (console) | `tiddl …` | Scripts, servers, power users |
+| **GUI** (desktop app) | `python -m app.main` | Browsing your library, bulk selecting downloads |
+
+Both use the same auth tokens and config (`~/.tiddl/`), so you can switch freely.
+
+## GUI (desktop app)
+
+The GUI lets you browse your Tidal library (Your Playlists, Liked Playlists, Albums, Artists), see which items are already downloaded, re-download, and watch per-track progress in real time.
+
+### Requirements
+
+PySide6 is an optional dependency — install it only if you want the GUI.
+
+```bash
+# from the repo root
+uv pip install -e .        # installs tiddl + PySide6 (listed in pyproject)
+# or
+pip install -e .
+```
+
+> [!NOTE]
+> `ffmpeg` is still required for the GUI since it downloads through the same tiddl engine.
+
+### Run it
+
+From the repo root:
+
+```bash
+python -m app.main
+```
+
+On first launch it opens a "Connect with Tidal" dialog: click the button, approve in your browser, and the app remembers your session.
+
+### Features
+
+- Sidebar tabs: **Playlists** · **Albums** · **Artists** · **Downloaded** · **Search Tidal**
+- Playlists sub-tabs: **All** · **Your Playlists** (created by you, paginated) · **Liked** (favorited)
+- Type pills on every row (PLAYLIST / ALBUM / ARTIST) and a ✓ Downloaded badge for items already on disk
+- Real-time download status card: current track, quality, N/M items, track counter
+- Concurrent downloads (3 in parallel by default) via `QThreadPool`
+- Auto re-login when your Tidal token expires
+- Auto-refresh of the Downloaded tab when a download finishes
+
+### Screenshot
+
+*(GUI screenshot here — run the app to see it in action.)*
+
+## CLI
 
 Run the app with `tiddl`
 
