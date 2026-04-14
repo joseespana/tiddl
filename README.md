@@ -11,28 +11,37 @@ Download tracks and videos from Tidal with max quality! `tiddl` ships with **two
 
 # Installation
 
-`tiddl` is available at [python package index](https://pypi.org/project/tiddl/) and you can install it with your favorite Python package manager.
+`tiddl` is published on [PyPI](https://pypi.org/project/tiddl/). Pick the flow that matches your platform.
 
 > [!IMPORTANT]
-> Also make sure you have installed  [`ffmpeg`](https://ffmpeg.org/download.html) - it is used to convert downloaded tracks to proper format.
+> You also need [`ffmpeg`](https://ffmpeg.org/download.html) on your PATH — it converts downloaded tracks to their final format. On macOS: `brew install ffmpeg`. On Windows: download from ffmpeg.org and add the `bin/` folder to PATH, or `winget install ffmpeg`. On Linux: `sudo apt install ffmpeg` / equivalent.
 
-## uv
+## Using pip (any OS)
 
-We recommend using [uv](https://docs.astral.sh/uv/)
+**macOS / Linux**
+
+```bash
+python3 -m pip install tiddl
+```
+
+**Windows (PowerShell)**
+
+```powershell
+python -m pip install tiddl
+```
+
+> [!NOTE]
+> If `python` isn't recognised on Windows, install it from [python.org](https://www.python.org/downloads/) and tick *"Add python.exe to PATH"*, or use the bundled launcher `py -3 -m pip install tiddl`.
+
+## Using uv (optional, faster)
+
+[`uv`](https://docs.astral.sh/uv/) is a fast drop-in replacement for pip. Works on macOS, Linux and Windows:
 
 ```bash
 uv tool install tiddl
 ```
 
-## pip
-
-You can also use [pip](https://packaging.python.org/en/latest/tutorials/installing-packages/)
-
-```bash
-pip install tiddl
-```
-
-## docker
+## Docker
 
 **coming soon**
 
@@ -40,12 +49,12 @@ pip install tiddl
 
 You have two ways to run tiddl:
 
-| Mode | Command | Best for |
-| --- | --- | --- |
-| **CLI** (console) | `tiddl …` | Scripts, servers, power users |
-| **GUI** (desktop app) | `python3 -m app.main` | Browsing your library, bulk selecting downloads |
+| Mode | Command (macOS/Linux) | Command (Windows) | Best for |
+| --- | --- | --- | --- |
+| **CLI** (console) | `tiddl …` | `tiddl …` | Scripts, servers, power users |
+| **GUI** (desktop app) | `python3 -m app.main` | `python -m app.main` | Browsing your library, bulk selecting downloads |
 
-Both use the same auth tokens and config (`~/.tiddl/`), so you can switch freely.
+Both share the same auth tokens and config (`~/.tiddl/` on macOS/Linux, `%USERPROFILE%\.tiddl\` on Windows), so you can switch between CLI and GUI freely.
 
 ## GUI (desktop app)
 
@@ -53,11 +62,20 @@ The GUI lets you browse your Tidal library (Your Playlists, Liked Playlists, Alb
 
 ### Requirements
 
-PySide6 is listed in `pyproject.toml` and gets installed automatically when you install the project.
+- **Python 3.10+**
+- **ffmpeg** on your PATH — [download here](https://ffmpeg.org/download.html). The GUI uses the same tiddl engine under the hood, so ffmpeg is still required to convert tracks.
+- **PySide6** — listed in `pyproject.toml`, installed automatically in the step below.
+
+> [!NOTE]
+> Throughout this section the commands are written as `python3` / `python3 -m pip`. Use whichever alias your system has:
+> - **macOS / Linux**: `python3` and `python3 -m pip` (the bare `python` / `pip` are usually not on PATH)
+> - **Windows (PowerShell / cmd)**: `python` and `python -m pip`, or the Windows launcher `py -3`
 
 ### Install
 
-Clone the repo and install in editable mode from the repo root:
+Clone the repo and install in editable mode:
+
+**macOS / Linux**
 
 ```bash
 git clone https://github.com/oskvr37/tiddl
@@ -65,21 +83,33 @@ cd tiddl
 python3 -m pip install -e .
 ```
 
-> [!NOTE]
-> On macOS the command is usually `python3` / `python3 -m pip` (the bare `pip` / `python` commands are not on PATH by default). On Linux/Windows either name works.
+**Windows (PowerShell)**
 
-> [!IMPORTANT]
-> `ffmpeg` is still required for the GUI since it downloads through the same tiddl engine.
+```powershell
+git clone https://github.com/oskvr37/tiddl
+cd tiddl
+python -m pip install -e .
+```
+
+If you get `'python' is not recognised` on Windows, install Python from [python.org](https://www.python.org/downloads/) and tick *"Add python.exe to PATH"*, or use `py -3 -m pip install -e .`.
 
 ### Run it
 
 From the repo root:
 
+**macOS / Linux**
+
 ```bash
 python3 -m app.main
 ```
 
-On first launch it opens a "Connect with Tidal" dialog: click the button, approve in your browser, and the app remembers your session.
+**Windows**
+
+```powershell
+python -m app.main
+```
+
+On first launch a "Connect with Tidal" dialog opens: click the button, approve in your browser, and the app remembers your session in `~/.tiddl/auth.json` (or `%USERPROFILE%\.tiddl\auth.json` on Windows).
 
 ### Features
 
@@ -205,39 +235,74 @@ You can copy example config from docs [config.example.toml](/docs/config.example
 
 You can set `TIDDL_PATH` environment variable to use custom path for `tiddl` app.
 
-Example CLI usage:
+**macOS / Linux** (bash/zsh)
 
-```sh
+```bash
 TIDDL_PATH=~/custom/tiddl tiddl auth login
+```
+
+**Windows (PowerShell)**
+
+```powershell
+$env:TIDDL_PATH = "$HOME\custom\tiddl"; tiddl auth login
+```
+
+**Windows (cmd.exe)**
+
+```cmd
+set TIDDL_PATH=%USERPROFILE%\custom\tiddl && tiddl auth login
 ```
 
 ### Auth stopped working?
 
-Set `TIDDL_AUTH` environment variable to use another credentials.
+Set `TIDDL_AUTH` environment variable to use another credentials:
 
+```
 TIDDL_AUTH=<CLIENT_ID>;<CLIENT_SECRET>
+```
+
+(Export it the same way as `TIDDL_PATH` above for your shell.)
 
 # Development
 
-Clone the repository
+Clone the repository:
 
 ```bash
 git clone https://github.com/oskvr37/tiddl
 cd tiddl
 ```
 
-You should create virtual environment and activate it
+Create and activate a virtual environment:
+
+**macOS / Linux**
 
 ```bash
-uv venv
-source .venv/Scripts/activate
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-Install package with `--editable` flag
+**Windows (PowerShell)**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+**Windows (cmd.exe)**
+
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+Install the package in editable mode:
 
 ```bash
-uv pip install -e .
+python -m pip install -e .
 ```
+
+> [!TIP]
+> If you prefer a faster install, [`uv`](https://docs.astral.sh/uv/) is a drop-in pip replacement written in Rust. After installing uv you can use `uv venv` + `uv pip install -e .` instead of the commands above.
 
 # Resources
 
