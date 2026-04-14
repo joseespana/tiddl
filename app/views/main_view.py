@@ -676,6 +676,9 @@ class MainView(QMainWindow):
 
         lay.addWidget(top)
 
+        # ── Downloaded dashboard (visible only on Downloaded tab) ────────────
+        lay.addWidget(self._make_downloaded_dashboard())
+
         # ── Playlist sub-tabs (All / Your playlists / Liked) ─────────────────
         lay.addWidget(self._make_playlist_subtabs())
 
@@ -715,6 +718,68 @@ class MainView(QMainWindow):
         lay.addWidget(self._make_bottom())
 
         return content
+
+    def _make_downloaded_dashboard(self) -> QWidget:
+        """Mini counters strip for the Downloaded tab.
+
+        Four stat columns (Playlists · Albums · Artists · Tracks) inside
+        a rounded dark card. Hidden unless the Downloaded tab is active.
+        """
+        self._dl_dashboard = QFrame()
+        self._dl_dashboard.setStyleSheet(
+            "background:#141414; border-bottom:1px solid #2a2a2a;"
+        )
+        self._dl_dashboard.setVisible(False)
+
+        outer = QHBoxLayout(self._dl_dashboard)
+        outer.setContentsMargins(16, 12, 16, 12)
+        outer.setSpacing(10)
+
+        self._dl_stat_labels: dict[str, QLabel] = {}
+
+        def _make_tile(key: str, caption: str, accent: str) -> QWidget:
+            tile = QFrame()
+            tile.setStyleSheet(
+                "QFrame{background:#1b1b1b;border:1px solid #252525;"
+                "border-radius:8px;}"
+                "QFrame:hover{border-color:#333;}"
+            )
+            v = QVBoxLayout(tile)
+            v.setContentsMargins(14, 10, 14, 10)
+            v.setSpacing(2)
+            num = QLabel("0")
+            nf = QFont()
+            nf.setPointSize(18)
+            nf.setBold(True)
+            num.setFont(nf)
+            num.setStyleSheet(f"color:{accent}; background:transparent;")
+            cap = QLabel(caption)
+            cap.setStyleSheet(
+                "color:#888; font-size:10px; background:transparent;"
+                "letter-spacing:0.5px;"
+            )
+            v.addWidget(num)
+            v.addWidget(cap)
+            self._dl_stat_labels[key] = num
+            return tile
+
+        outer.addWidget(_make_tile("playlists", "PLAYLISTS", "#00aacc"), 1)
+        outer.addWidget(_make_tile("albums", "ALBUMS", "#b46eff"), 1)
+        outer.addWidget(_make_tile("artists", "ARTISTS", "#e8900a"), 1)
+        outer.addWidget(_make_tile("tracks", "TRACKS", "#0c6"), 1)
+
+        return self._dl_dashboard
+
+    def set_downloaded_stats(self, stats: dict[str, int]) -> None:
+        """Update the dashboard numbers.
+
+        Args:
+            stats: ``{"playlists":int, "albums":int, "artists":int,
+                "tracks":int}`` — extra keys are ignored.
+        """
+        for key, lbl in self._dl_stat_labels.items():
+            n = int(stats.get(key, 0))
+            lbl.setText(f"{n:,}")
 
     def _make_playlist_subtabs(self) -> QWidget:
         self._pl_subtabs = QFrame()
@@ -1005,6 +1070,8 @@ class MainView(QMainWindow):
         self._search_box.blockSignals(False)
         # Playlist sub-tabs are only meaningful on the Playlists tab
         self._pl_subtabs.setVisible(tab == "playlists")
+        # Downloaded dashboard strip only on the Downloaded tab
+        self._dl_dashboard.setVisible(tab == "downloaded")
         if tab == "playlists":
             # Reset to "All" when (re)entering the tab
             for k, b in self._pl_subtab_btns.items():

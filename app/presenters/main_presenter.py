@@ -191,6 +191,13 @@ class MainPresenter(QObject):
             return
 
         if tab == "downloaded":
+            # Push the latest counters so the dashboard is live-correct
+            # even when the cache hasn't changed.
+            if self._disk_cache is not None:
+                try:
+                    self._view.set_downloaded_stats(self._disk_cache.stats())
+                except Exception as exc:
+                    log.warning("set_downloaded_stats failed: %s", exc)
             worker = DownloadedWorker(self._api, self._view.get_download_path())
             thread = QThread()
             worker.item_ready.connect(self._on_item_ready)
@@ -378,6 +385,11 @@ class MainPresenter(QObject):
 
     def _rebuild_cache(self) -> None:
         self._disk_cache = DiskCache(self._view.get_download_path())
+        # Refresh the Downloaded-tab dashboard counters.
+        try:
+            self._view.set_downloaded_stats(self._disk_cache.stats())
+        except Exception as exc:
+            log.warning("set_downloaded_stats failed: %s", exc)
         # Walk every card and push the freshly-computed downloaded flag.
         # Keeps card DTOs immutable (frozen dataclass) — we simply re-skin.
         for w in self._view.item_widgets:

@@ -151,6 +151,20 @@ class DiskCache:
             return False
         return False
 
+    @staticmethod
+    def _count_audio(album_dir: Path) -> int:
+        """Count .flac/.m4a files directly under *album_dir* (non-recursive)."""
+        n = 0
+        try:
+            for entry in album_dir.iterdir():
+                if entry.is_file():
+                    suffix = entry.suffix.lower()
+                    if suffix == ".flac" or suffix == ".m4a":
+                        n += 1
+        except Exception:
+            return 0
+        return n
+
     def _start_background_refresh(self) -> None:
         """Launch the incremental refresh on a daemon thread."""
         t = threading.Thread(
@@ -182,7 +196,9 @@ class DiskCache:
 
         cached_mtimes = self._db.get_scan_mtimes()
         seen_paths: set[str] = set()
-        new_rows: list[tuple[str, int, str | None, str | None, bool]] = []
+        new_rows: list[
+            tuple[str, int, str | None, str | None, bool, int]
+        ] = []
 
         new_albums: set[tuple[str, str]] = set()
         new_artists: set[str] = set()
@@ -225,9 +241,10 @@ class DiskCache:
                         artist_found = True
                     continue
 
-                has_audio = self._dir_has_audio(album_dir)
+                track_count = self._count_audio(album_dir)
+                has_audio = track_count > 0
                 new_rows.append(
-                    (path_str, mtime_ns, aname, bname, has_audio),
+                    (path_str, mtime_ns, aname, bname, has_audio, track_count),
                 )
                 if has_audio:
                     new_albums.add((aname, bname))
@@ -274,6 +291,31 @@ class DiskCache:
         if self._refresh_thread is not None and self._refresh_thread.is_alive():
             self._refresh_thread.join()
         self._run_refresh()
+
+    def stats(self) -> dict[str, int]:
+        """Return counters for the Downloaded-tab dashboard.
+
+        - ``playlists``: count of distinct playlists found on disk (via
+          m3u stems — these are the ones with a usable ``.m3u``).
+        - ``albums``: count of album folders with at least one audio file.
+        - ``artists``: count of artist folders that host any audio.
+        - ``tracks``: total audio files across every album folder.
+
+        The track count is summed from ``disk_scan_cache.track_count``;
+        falls back to 0 when the DB isn't available.
+        """
+        tracks = 0
+        if self._db is not None:
+            try:
+                tracks = self._db.total_tracks()
+            except Exception as exc:
+                log.warning("total_tracks() failed: %s", exc)
+        return {
+            "playlists": len(self.m3u_stems),
+            "albums": len(self.albums),
+            "artists": len(self.artists),
+            "tracks": tracks,
+        }
 
     def has_playlist(self, title: str, uuid: str = "") -> bool:
         """Return True if the playlist is recorded as downloaded."""

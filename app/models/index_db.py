@@ -35,11 +35,12 @@ CREATE TABLE IF NOT EXISTS downloaded_items (
 CREATE INDEX IF NOT EXISTS idx_downloaded_kind ON downloaded_items(kind);
 
 CREATE TABLE IF NOT EXISTS disk_scan_cache (
-    path       TEXT PRIMARY KEY,
-    mtime_ns   INTEGER NOT NULL,
-    artist     TEXT,
-    album      TEXT,
-    has_audio  INTEGER NOT NULL
+    path        TEXT PRIMARY KEY,
+    mtime_ns    INTEGER NOT NULL,
+    artist      TEXT,
+    album       TEXT,
+    has_audio   INTEGER NOT NULL,
+    track_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS scan_meta (
@@ -89,6 +90,18 @@ class IndexDB:
 
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            # Additive migration: older DBs lack the track_count column.
+            cols = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(disk_scan_cache)"
+                )
+            }
+            if "track_count" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE disk_scan_cache "
+                    "ADD COLUMN track_count INTEGER NOT NULL DEFAULT 0"
+                )
 
         self._maybe_migrate_legacy_json()
 
@@ -249,10 +262,19 @@ class IndexDB:
         with self._lock:
             return list(
                 self._conn.execute(
-                    "SELECT path, mtime_ns, artist, album, has_audio "
-                    "FROM disk_scan_cache"
+                    "SELECT path, mtime_ns, artist, album, has_audio, "
+                    "track_count FROM disk_scan_cache"
                 ).fetchall()
             )
+
+    def total_tracks(self) -> int:
+        """Sum of ``track_count`` across every scan row with audio."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(track_count), 0) "
+                "FROM disk_scan_cache WHERE has_audio = 1"
+            ).fetchone()
+        return int(row[0] if row else 0)
 
     def get_scan_mtimes(self) -> dict[str, int]:
         """Return a ``{path: mtime_ns}`` map for incremental scans."""
@@ -264,16 +286,19 @@ class IndexDB:
 
     def upsert_scan_rows(
         self,
-        rows: Iterable[tuple[str, int, Optional[str], Optional[str], bool]],
+        rows: Iterable[
+            tuple[str, int, Optional[str], Optional[str], bool, int]
+        ],
     ) -> None:
         """Insert or replace multiple scan-cache rows in one transaction.
 
         Args:
-            rows: Iterable of ``(path, mtime_ns, artist, album, has_audio)``.
+            rows: Iterable of
+                ``(path, mtime_ns, artist, album, has_audio, track_count)``.
         """
         batch = [
-            (p, mt, ar, al, 1 if has else 0)
-            for (p, mt, ar, al, has) in rows
+            (p, mt, ar, al, 1 if has else 0, int(tc or 0))
+            for (p, mt, ar, al, has, tc) in rows
         ]
         if not batch:
             return
@@ -282,8 +307,8 @@ class IndexDB:
                 self._conn.execute("BEGIN")
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO disk_scan_cache "
-                    "(path, mtime_ns, artist, album, has_audio) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "(path, mtime_ns, artist, album, has_audio, track_count) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
                     batch,
                 )
                 self._conn.execute("COMMIT")
