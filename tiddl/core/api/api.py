@@ -15,6 +15,7 @@ from .models.base import (
     SessionResponse,
     TrackLyrics,
     TrackStream,
+    UserPlaylistsItems,
     VideoStream,
 )
 from .models.resources import (
@@ -170,6 +171,19 @@ class TidalAPI:
             Favorites,
             f"users/{self.user_id}/favorites/ids",
             {"countryCode": self.country_code},
+            expire_after=EXPIRE_IMMEDIATELY,
+        )
+
+    def get_user_playlists(self, limit: int = 50, offset: int = 0):
+        """Fetch the playlists the user created (paginated)."""
+        return self.client.fetch(
+            UserPlaylistsItems,
+            f"users/{self.user_id}/playlists",
+            {
+                "countryCode": self.country_code,
+                "limit": min(limit, 50),
+                "offset": offset,
+            },
             expire_after=EXPIRE_IMMEDIATELY,
         )
 

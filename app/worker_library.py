@@ -21,11 +21,15 @@ class LibraryWorker(QObject):
 
     Signals:
         item_ready: Emitted for each loaded item object.
+        item_ready_tagged: Emitted as (item, source) where source is
+            ``"owned"`` (user-created playlist) or ``"liked"`` (favorited).
+            Non-playlist tabs always emit source=``""``.
         finished: Emitted when the run loop ends (success or error).
         error: Emitted with an error message string on failure.
     """
 
     item_ready = Signal(object)
+    item_ready_tagged = Signal(object, str)
     finished = Signal()
     error = Signal(str)
 
@@ -56,11 +60,44 @@ class LibraryWorker(QObject):
             favorites: Favorites = self.api.get_favorites()
 
             if self.tab == "playlists":
+                seen_uuids: set[str] = set()
+
+                # 1) User-CREATED playlists (paginated endpoint)
+                offset = 0
+                page_size = 50
+                while not self._interrupted:
+                    try:
+                        page = self.api.get_user_playlists(
+                            limit=page_size, offset=offset
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "Failed to load user playlists offset=%d: %s",
+                            offset, exc,
+                        )
+                        break
+                    for pl in page.items:
+                        if self._interrupted:
+                            break
+                        seen_uuids.add(pl.uuid)
+                        self.item_ready_tagged.emit(pl, "owned")
+                    total = page.totalNumberOfItems
+                    offset += len(page.items)
+                    if not page.items or offset >= total:
+                        break
+
+                # 2) FAVORITED (liked/followed) playlists
                 for uuid in favorites.PLAYLIST:
                     if self._interrupted:
                         break
-                    pl = self.api.get_playlist(playlist_uuid=uuid)
-                    self.item_ready.emit(pl)
+                    if uuid in seen_uuids:
+                        continue
+                    try:
+                        pl = self.api.get_playlist(playlist_uuid=uuid)
+                    except Exception as exc:
+                        log.warning("Failed to load playlist %s: %s", uuid, exc)
+                        continue
+                    self.item_ready_tagged.emit(pl, "liked")
 
             elif self.tab == "albums":
                 for album_id in favorites.ALBUM:

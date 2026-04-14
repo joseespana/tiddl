@@ -42,6 +42,10 @@ class ArtistVideosItems(Items):
     items: List[Video]
 
 
+class UserPlaylistsItems(Items):
+    items: List[Playlist]
+
+
 ItemType = Literal["track", "video"]
 
 

@@ -524,6 +524,9 @@ class MainView(QMainWindow):
 
         lay.addWidget(top)
 
+        # ── Playlist sub-tabs (All / Your playlists / Liked) ─────────────────
+        lay.addWidget(self._make_playlist_subtabs())
+
         # ── Tidal search panel (visible only on Search tab) ───────────────────
         lay.addWidget(self._make_search_panel())
 
@@ -552,6 +555,66 @@ class MainView(QMainWindow):
         lay.addWidget(self._make_bottom())
 
         return content
+
+    def _make_playlist_subtabs(self) -> QWidget:
+        self._pl_subtabs = QFrame()
+        self._pl_subtabs.setStyleSheet(
+            "background:#181818; border-bottom:1px solid #2a2a2a;"
+        )
+        self._pl_subtabs.setVisible(False)
+        row = QHBoxLayout(self._pl_subtabs)
+        row.setContentsMargins(16, 6, 16, 6)
+        row.setSpacing(6)
+
+        self._pl_subtab_btns: dict[str, QPushButton] = {}
+        for label, key in [
+            ("All", "all"),
+            ("Your Playlists", "owned"),
+            ("Liked", "liked"),
+        ]:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                "QPushButton{background:transparent;border:1px solid transparent;"
+                "border-radius:14px;padding:4px 14px;color:#888;font-size:12px;}"
+                "QPushButton:hover{color:#ddd;}"
+                "QPushButton:checked{background:rgba(0,255,255,25);"
+                "border-color:rgba(0,255,255,120);color:#0ff;font-weight:bold;}"
+            )
+            btn.clicked.connect(
+                lambda _checked, k=key: self._on_subtab_clicked(k)
+            )
+            row.addWidget(btn)
+            self._pl_subtab_btns[key] = btn
+        row.addStretch()
+
+        self._pl_subtab_btns["all"].setChecked(True)
+        self._current_subtab = "all"
+        return self._pl_subtabs
+
+    def _on_subtab_clicked(self, key: str) -> None:
+        if self._current_subtab == key:
+            self._pl_subtab_btns[key].setChecked(True)
+            return
+        for k, b in self._pl_subtab_btns.items():
+            b.setChecked(k == key)
+        self._current_subtab = key
+        self._apply_subtab_filter()
+
+    def _apply_subtab_filter(self) -> None:
+        """Hide/show rows based on the active sub-tab (all / owned / liked)."""
+        key = self._current_subtab
+        q = self._search_box.text().strip().lower()
+        for w in self.item_widgets:
+            src = getattr(w, "_source", "")
+            subtab_ok = key == "all" or src == key
+            search_ok = not q or q in w._title_cache or q in w._sub_cache
+            visible = subtab_ok and search_ok
+            w.setVisible(visible)
+            if w._sep:
+                w._sep.setVisible(visible)
+        self.update_select_btn()
 
     def _make_search_panel(self) -> QWidget:
         self._search_panel = QFrame()
@@ -780,6 +843,13 @@ class MainView(QMainWindow):
         self._search_box.blockSignals(True)
         self._search_box.clear()
         self._search_box.blockSignals(False)
+        # Playlist sub-tabs are only meaningful on the Playlists tab
+        self._pl_subtabs.setVisible(tab == "playlists")
+        if tab == "playlists":
+            # Reset to "All" when (re)entering the tab
+            for k, b in self._pl_subtab_btns.items():
+                b.setChecked(k == "all")
+            self._current_subtab = "all"
 
     def set_tab_title(self, title: str) -> None:
         """Set the large title label in the top bar."""
@@ -799,13 +869,14 @@ class MainView(QMainWindow):
         self._list_layout.addStretch()
         self.update_select_btn()
 
-    def add_item(self, item_data, cache) -> None:
+    def add_item(self, item_data, cache, source: str = "") -> None:
         """Append a library item row to the list.
 
         Args:
             item_data: Tidal API model object (Playlist, Album, Artist …).
             cache: DiskCache instance used to initialise the downloaded badge,
                 or None.
+            source: Sub-tab source tag (``"owned"``, ``"liked"``, or ``""``).
         """
         # Hide loading label on first item
         idx = self._list_layout.indexOf(self._loading_label)
@@ -814,6 +885,7 @@ class MainView(QMainWindow):
             self._loading_label.setVisible(False)
 
         widget = LibraryItemWidget(item_data, cache)
+        widget._source = source
         widget.check_changed.connect(self.update_select_btn)
 
         sep = QFrame()
@@ -828,12 +900,16 @@ class MainView(QMainWindow):
         self.item_widgets.append(widget)
         widget.play_fade_in()
 
-        # Apply any active search filter immediately
+        # Apply any active search filter + sub-tab filter immediately
         q = self._search_box.text().strip().lower()
-        if q:
-            visible = q in widget._title_cache or q in widget._sub_cache
-            widget.setVisible(visible)
-            sep.setVisible(visible)
+        subtab_ok = (
+            getattr(self, "_current_subtab", "all") in ("all", source)
+        ) if source else True
+        search_ok = not q or q in widget._title_cache or q in widget._sub_cache
+        visible = subtab_ok and search_ok
+        if not visible:
+            widget.setVisible(False)
+            sep.setVisible(False)
 
     def set_loading_text(self, msg: str) -> None:
         """Set text on the loading/empty-state label and make it visible.

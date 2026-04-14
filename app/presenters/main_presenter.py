@@ -81,6 +81,10 @@ class MainPresenter(QObject):
         """Deliver one library item to the view (always runs in main thread)."""
         self._view.add_item(item, self._disk_cache)
 
+    def _on_item_ready_tagged(self, item: object, source: str) -> None:
+        """Deliver a tagged playlist item (owned/liked) to the view."""
+        self._view.add_item(item, self._disk_cache, source=source)
+
     def _on_dl_log_line(self, _task_id: str, line: str) -> None:
         """Parse download log lines and update the status card."""
         # Parse "Downloaded <title>  <quality>" lines (two spaces before quality)
@@ -183,6 +187,7 @@ class MainPresenter(QObject):
         worker = LibraryWorker(self._api, tab)
         thread = QThread()
         worker.item_ready.connect(self._on_item_ready)
+        worker.item_ready_tagged.connect(self._on_item_ready_tagged)
         worker.finished.connect(self._on_library_loaded)
         worker.error.connect(self._on_library_error)
         self._lib_worker = worker
