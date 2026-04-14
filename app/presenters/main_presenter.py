@@ -75,12 +75,38 @@ class MainPresenter(QObject):
         self._view.select_all_toggled.connect(self._toggle_select_all)
         self._view.resync_requested.connect(self._resync)
         self._view.sync_metadata_requested.connect(self._sync_metadata)
+        self._view.download_pause_requested.connect(self._toggle_pause_download)
+        self._view.download_cancel_requested.connect(self._cancel_download)
         self._view.detail_requested.connect(self._open_detail)
 
     def _connect_download_manager(self) -> None:
         self._dl_manager.log_line.connect(self._on_dl_log_line)
         self._dl_manager.task_updated.connect(self._on_task_updated)
         self._dl_manager.all_done.connect(self._on_all_downloads_done)
+        self._dl_manager.paused_changed.connect(self._view.set_download_paused)
+
+    def _toggle_pause_download(self) -> None:
+        """Flip the DownloadManager between paused and running states."""
+        if self._dl_manager.is_paused():
+            self._dl_manager.resume()
+        else:
+            self._dl_manager.pause()
+
+    def _cancel_download(self) -> None:
+        """Abort every in-flight download/sync subprocess."""
+        from PySide6.QtWidgets import QMessageBox
+        if not self._dl_manager.has_work():
+            return
+        confirm = QMessageBox.question(
+            self._view,
+            "Cancel downloads",
+            "Stop every in-flight download and drop the queue?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._dl_manager.cancel_all()
+        # The existing all_done → _on_all_downloads_done path takes care
+        # of restoring the Download button + hiding the progress bar.
 
     # ── Thread-safe item / log slots ──────────────────────────────────────────
     # These are proper QObject methods so Qt uses QueuedConnection when the

@@ -126,15 +126,25 @@ class DownloadManager(QObject):
     task_updated = Signal(object)      # DownloadTask
     log_line = Signal(str, str)        # task_id, line
     all_done = Signal()
+    paused_changed = Signal(bool)      # True when paused, False when running
 
     MAX_CONCURRENT: int = 3
 
     def __init__(self, parent: QObject = None) -> None:
         super().__init__(parent)
         self._pool = QThreadPool()
+        # We manage concurrency ourselves via ``_maybe_start_next`` so
+        # pause/resume can hold a long queue without flooding the pool.
+        # Keep the pool's max equal to MAX_CONCURRENT just as an extra
+        # safety net.
         self._pool.setMaxThreadCount(self.MAX_CONCURRENT)
         self._tasks: Dict[str, DownloadTask] = {}
         self._runnables: Dict[str, _DownloadRunnable] = {}
+        # Runnables built but not yet handed to the pool — drained by
+        # _maybe_start_next as slots free up.
+        self._pending: List[_DownloadRunnable] = []
+        self._active: int = 0
+        self._paused: bool = False
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -172,7 +182,9 @@ class DownloadManager(QObject):
         return ids
 
     def cancel_all(self) -> None:
-        """Request cancellation of all in-flight and queued tasks."""
+        """Terminate every in-flight subprocess and drop every queued task."""
+        # Drop the pending queue first — those haven't been started yet.
+        self._pending.clear()
         for runnable in self._runnables.values():
             runnable.cancel()
         for task in self._tasks.values():
@@ -180,6 +192,39 @@ class DownloadManager(QObject):
                 task.status = DownloadStatus.CANCELLED
                 self.task_updated.emit(task)
         self._runnables.clear()
+        self._active = 0
+        # A cancel also un-pauses so the next enqueue works normally.
+        if self._paused:
+            self._paused = False
+            self.paused_changed.emit(False)
+        self._check_all_done()
+
+    def pause(self) -> None:
+        """Stop starting new tasks; let the running ones finish naturally.
+
+        Queued items stay in ``_pending``; call :meth:`resume` to drain
+        them into the pool once the user wants to continue.
+        """
+        if self._paused:
+            return
+        self._paused = True
+        self.paused_changed.emit(True)
+
+    def resume(self) -> None:
+        """Resume starting queued tasks after a :meth:`pause`."""
+        if not self._paused:
+            return
+        self._paused = False
+        self.paused_changed.emit(False)
+        self._maybe_start_next()
+
+    def is_paused(self) -> bool:
+        """Return True when the manager is currently paused."""
+        return self._paused
+
+    def has_work(self) -> bool:
+        """Return True while at least one task is running or queued."""
+        return self._active > 0 or bool(self._pending)
 
     def get_tasks(self) -> List[DownloadTask]:
         return list(self._tasks.values())
@@ -195,14 +240,26 @@ class DownloadManager(QObject):
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _start_runnable(self, task: DownloadTask) -> None:
+        """Build a runnable for *task*, park it pending, then pump the queue."""
         runnable = _DownloadRunnable(task)
         runnable.signals.log_line.connect(self._on_log_line)
         runnable.signals.finished.connect(self._on_finished)
         runnable.signals.failed.connect(self._on_failed)
-        self._runnables[task.id] = runnable
-        task.status = DownloadStatus.DOWNLOADING
-        self.task_updated.emit(task)
-        self._pool.start(runnable)
+        self._pending.append(runnable)
+        self._maybe_start_next()
+
+    def _maybe_start_next(self) -> None:
+        """Submit pending runnables until we hit the concurrency cap."""
+        if self._paused:
+            return
+        while self._active < self.MAX_CONCURRENT and self._pending:
+            runnable = self._pending.pop(0)
+            task = runnable.task
+            self._runnables[task.id] = runnable
+            task.status = DownloadStatus.DOWNLOADING
+            self.task_updated.emit(task)
+            self._active += 1
+            self._pool.start(runnable)
 
     def _on_log_line(self, task_id: str, line: str) -> None:
         task = self._tasks.get(task_id)
@@ -216,6 +273,8 @@ class DownloadManager(QObject):
             task.status = DownloadStatus.DONE
             self.task_updated.emit(task)
         self._runnables.pop(task_id, None)
+        self._active = max(0, self._active - 1)
+        self._maybe_start_next()
         self._check_all_done()
 
     def _on_failed(self, task_id: str, error: str) -> None:
@@ -230,11 +289,18 @@ class DownloadManager(QObject):
             task.error = error
             self.task_updated.emit(task)
         self._runnables.pop(task_id, None)
+        self._active = max(0, self._active - 1)
+        self._maybe_start_next()
         log.error("Download failed for task %s: %s", task_id, error)
         self._check_all_done()
 
     def _check_all_done(self) -> None:
-        pending = [t for t in self._tasks.values()
-                   if t.status in (DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING)]
-        if not pending:
-            self.all_done.emit()
+        # "Done" means neither running nor waiting. Pausing does not count
+        # as done: tasks held in _pending are still our responsibility.
+        if self._active == 0 and not self._pending:
+            unfinished = [
+                t for t in self._tasks.values()
+                if t.status in (DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING)
+            ]
+            if not unfinished:
+                self.all_done.emit()

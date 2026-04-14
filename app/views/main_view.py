@@ -592,6 +592,8 @@ class MainView(QMainWindow):
     select_all_toggled = Signal(bool)
     resync_requested = Signal()
     sync_metadata_requested = Signal()
+    download_pause_requested = Signal()
+    download_cancel_requested = Signal()
     detail_requested = Signal(CardVM)
 
     def __init__(self) -> None:
@@ -1082,6 +1084,36 @@ class MainView(QMainWindow):
         self._dl_quality_lbl.setStyleSheet("color:#555; font-size:11px;")
         row_a.addWidget(self._dl_quality_lbl)
 
+        # Pause and Cancel controls — live right of the quality label
+        # so they're always reachable during a long download/sync.
+        ctrl_btn_qss = (
+            "QPushButton{background:#222;border:1px solid #333;"
+            "border-radius:4px;padding:2px 10px;color:#bbb;font-size:11px;}"
+            "QPushButton:hover{border-color:#0ff;color:#0ff;}"
+            "QPushButton:disabled{color:#444;border-color:#2a2a2a;}"
+        )
+        self._dl_pause_btn = QPushButton("⏸ Pause")
+        self._dl_pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._dl_pause_btn.setToolTip(
+            "Stop starting new items. Items already running will finish."
+        )
+        self._dl_pause_btn.setStyleSheet(ctrl_btn_qss)
+        self._dl_pause_btn.clicked.connect(self.download_pause_requested)
+        row_a.addWidget(self._dl_pause_btn)
+
+        self._dl_cancel_btn = QPushButton("✕ Cancel")
+        self._dl_cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._dl_cancel_btn.setToolTip(
+            "Abort every in-flight subprocess and clear the queue."
+        )
+        self._dl_cancel_btn.setStyleSheet(
+            "QPushButton{background:#2a1414;border:1px solid #5a2424;"
+            "border-radius:4px;padding:2px 10px;color:#e88;font-size:11px;}"
+            "QPushButton:hover{border-color:#f66;color:#f88;}"
+        )
+        self._dl_cancel_btn.clicked.connect(self.download_cancel_requested)
+        row_a.addWidget(self._dl_cancel_btn)
+
         card_lay.addLayout(row_a)
 
         # 1px separator
@@ -1287,6 +1319,29 @@ class MainView(QMainWindow):
         self._dl_quality_lbl.setText("")
         self._dl_task_lbl.setText(f"0 / {total} items")
         self._dl_count_lbl.setText("0 tracks")
+        # Reset control buttons for a fresh run.
+        self._dl_pause_btn.setText("\u23f8 Pause")
+        self._dl_pause_btn.setEnabled(True)
+        self._dl_cancel_btn.setEnabled(True)
+        self._dl_arrow.setText("\u2193")
+        self._dl_arrow.setStyleSheet(
+            "color:#0ff; font-size:16px; font-weight:bold;"
+        )
+
+    def set_download_paused(self, paused: bool) -> None:
+        """Reflect the manager's pause state in the pause/resume button."""
+        if paused:
+            self._dl_pause_btn.setText("\u25b6 Resume")
+            self._dl_arrow.setText("\u23f8")
+            self._dl_arrow.setStyleSheet(
+                "color:#f0a500; font-size:16px; font-weight:bold;"
+            )
+        else:
+            self._dl_pause_btn.setText("\u23f8 Pause")
+            self._dl_arrow.setText("\u2193")
+            self._dl_arrow.setStyleSheet(
+                "color:#0ff; font-size:16px; font-weight:bold;"
+            )
 
     def set_download_progress(self, done: int, total: int) -> None:
         """Update the progress bar value."""
@@ -1343,11 +1398,13 @@ class MainView(QMainWindow):
         QTimer.singleShot(10_000, _clear)
 
     def hide_download_status(self) -> None:
-        """Hide the download status card and progress bar after completion."""
+        """Reflect completion: disable controls, show the ✓ done state."""
         # Don't hide immediately — leave visible so user can see the final state.
         self._dl_track_lbl.setText("Done")
         self._dl_arrow.setText("\u2713")
         self._dl_arrow.setStyleSheet("color:#0c6; font-size:16px; font-weight:bold;")
+        self._dl_pause_btn.setEnabled(False)
+        self._dl_cancel_btn.setEnabled(False)
 
     def set_download_btn_text(self, text: str) -> None:
         """Set the text of the Download Selected button."""
