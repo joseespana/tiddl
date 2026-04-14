@@ -219,7 +219,7 @@ class CoverLabel(QLabel):
 # ── Library card widget ───────────────────────────────────────────────────────
 
 CARD_W = 178
-CARD_H = 232
+CARD_H = 268
 COVER_SIZE = 178
 CARD_SPACING_H = 14
 CARD_SPACING_V = 18
@@ -297,33 +297,12 @@ class LibraryItemWidget(QFrame):
         self.checkbox.stateChanged.connect(self.check_changed)
         self.checkbox.raise_()
 
-        # Type badge (PLAYLIST / ALBUM / ARTIST) — bottom-left
-        itype = self._item_type(item_data)
-        self._type_badge = QLabel(_BADGE_LABEL.get(itype, ""), self._cover_container)
-        self._type_badge.setStyleSheet(_BADGE_QSS.get(itype, ""))
-        self._type_badge.setVisible(bool(_BADGE_LABEL.get(itype)))
-        self._type_badge.adjustSize()
-        self._type_badge.move(8, 148)
-        self._type_badge.raise_()
-
-        # Downloaded badge — bottom-right
-        self._badge = QLabel("✓ Downloaded", self._cover_container)
-        self._badge.setStyleSheet(
-            "background: rgba(0,200,100,180); color: #fff; "
-            "border: 1px solid rgba(0,200,100,220); border-radius: 3px; "
-            "font-size: 10px; font-weight:bold; padding: 1px 6px;"
-        )
-        self._badge.setVisible(False)
-        self._badge.adjustSize()
-        self._badge.move(COVER_SIZE - self._badge.width() - 8, 148)
-        self._badge.raise_()
-
-        # ── Text block ────────────────────────────────────────────────────────
+        # ── Text + badges block (below cover) ─────────────────────────────────
         text_wrap = QWidget(self)
         text_wrap.setStyleSheet("background:transparent;")
         text_lay = QVBoxLayout(text_wrap)
-        text_lay.setContentsMargins(6, 8, 6, 8)
-        text_lay.setSpacing(2)
+        text_lay.setContentsMargins(8, 8, 8, 8)
+        text_lay.setSpacing(4)
 
         title_text = self._title(item_data)
         sub_text = self._subtitle(item_data)
@@ -336,8 +315,8 @@ class LibraryItemWidget(QFrame):
         )
         self._title_lbl.setWordWrap(False)
         self._title_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        self._title_lbl.setMaximumWidth(166)
-        self._title_lbl.setText(self._elide(title_text, self._title_lbl.font(), 166))
+        self._title_lbl.setMaximumWidth(162)
+        self._title_lbl.setText(self._elide(title_text, self._title_lbl.font(), 162))
         self._title_lbl.setToolTip(title_text)
         text_lay.addWidget(self._title_lbl)
 
@@ -346,10 +325,32 @@ class LibraryItemWidget(QFrame):
             "color:#888; font-size:11px; background:transparent;"
         )
         self._sub_lbl.setWordWrap(False)
-        self._sub_lbl.setMaximumWidth(166)
-        self._sub_lbl.setText(self._elide(sub_text, self._sub_lbl.font(), 166))
+        self._sub_lbl.setMaximumWidth(162)
+        self._sub_lbl.setText(self._elide(sub_text, self._sub_lbl.font(), 162))
         self._sub_lbl.setToolTip(sub_text)
         text_lay.addWidget(self._sub_lbl)
+
+        # Badge row (type pill + downloaded/pending badge) — under the text
+        badge_row = QHBoxLayout()
+        badge_row.setContentsMargins(0, 2, 0, 0)
+        badge_row.setSpacing(6)
+
+        itype = self._item_type(item_data)
+        self._type_badge = QLabel(_BADGE_LABEL.get(itype, ""), text_wrap)
+        self._type_badge.setStyleSheet(_BADGE_QSS.get(itype, ""))
+        self._type_badge.setVisible(bool(_BADGE_LABEL.get(itype)))
+        badge_row.addWidget(self._type_badge)
+
+        self._badge = QLabel("✓ Downloaded", text_wrap)
+        self._badge.setStyleSheet(
+            "background:rgba(0,200,100,30); color:#0c6;"
+            "border:1px solid rgba(0,200,100,120); border-radius:3px;"
+            "font-size:9px; font-weight:600; padding:1px 5px; letter-spacing:0.5px;"
+        )
+        self._badge.setVisible(False)
+        badge_row.addWidget(self._badge)
+        badge_row.addStretch()
+        text_lay.addLayout(badge_row)
         text_lay.addStretch()
 
         outer.addWidget(text_wrap, 1)
@@ -391,29 +392,22 @@ class LibraryItemWidget(QFrame):
         return ""
 
     def refresh_downloaded(self, cache) -> None:
-        """Update downloaded badge + dim overlay + checkbox enabled state."""
+        """Update downloaded badge, dim overlay, checkbox visibility + cursor."""
         is_dl = self._check_downloaded(cache)
         self._badge.setVisible(is_dl)
         if is_dl:
-            # Re-position badge in case width changed after first show
-            self._badge.adjustSize()
-            self._badge.move(COVER_SIZE - self._badge.width() - 8, 148)
-            self.checkbox.setEnabled(False)
+            # Hide the checkbox entirely (cannot be re-selected)
             self.checkbox.setChecked(False)
+            self.checkbox.setVisible(False)
             self._dim_overlay.setVisible(True)
             self._dim_overlay.raise_()
-            # Re-raise overlays so they remain above the dim layer
-            self.checkbox.raise_()
-            self._type_badge.raise_()
-            self._badge.raise_()
-            self.setStyleSheet(
-                self._base_qss
-                + "LibraryItemWidget{opacity:0.7;}"
-            )
+            self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
-            self.checkbox.setEnabled(True)
+            self.checkbox.setVisible(True)
+            self.checkbox.raise_()
             self._dim_overlay.setVisible(False)
-            self.setStyleSheet(self._base_qss)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+
 
     def _check_downloaded(self, cache) -> bool:
         if cache is None:
@@ -544,6 +538,7 @@ class MainView(QMainWindow):
     path_changed = Signal(str)
     filter_changed = Signal(str)
     select_all_toggled = Signal(bool)
+    resync_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -642,8 +637,18 @@ class MainView(QMainWindow):
         top_lay.addWidget(self._search_box)
         top_lay.addStretch()
 
+        self._resync_btn = QPushButton("↻ Resync")
+        self._resync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._resync_btn.setToolTip(
+            "Re-scan the download folder to refresh ✓ Downloaded badges"
+        )
+        self._resync_btn.setStyleSheet(_action_btn_style())
+        self._resync_btn.clicked.connect(self.resync_requested)
+        top_lay.addWidget(self._resync_btn)
+
         self._select_btn = QPushButton("Select All")
         self._select_btn.setCheckable(True)
+        self._select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._select_btn.setStyleSheet(_action_btn_style())
         self._select_btn.clicked.connect(
             lambda checked: self.select_all_toggled.emit(checked)

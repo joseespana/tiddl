@@ -66,6 +66,7 @@ class MainPresenter(QObject):
         self._view.path_changed.connect(self._on_path_changed)
         self._view.filter_changed.connect(self._filter_list)
         self._view.select_all_toggled.connect(self._toggle_select_all)
+        self._view.resync_requested.connect(self._resync)
 
     def _connect_download_manager(self) -> None:
         self._dl_manager.log_line.connect(self._on_dl_log_line)
@@ -335,6 +336,21 @@ class MainPresenter(QObject):
 
     def _on_path_changed(self, _: str) -> None:
         self._rebuild_cache()
+
+    def _resync(self) -> None:
+        """Re-scan the download folder and refresh all download badges.
+
+        Gives the user an explicit way to validate that items marked as
+        downloaded are still on disk and to pick up any new downloads
+        performed outside the app.
+        """
+        self._rebuild_cache()
+        # If the Downloaded tab is active, reload its contents too so the
+        # list reflects the current on-disk state.
+        if self._current_tab == "downloaded":
+            saved = self._current_tab
+            self._current_tab = ""
+            self.load_tab(saved)
 
     # ── Folder browse ─────────────────────────────────────────────────────────
 
