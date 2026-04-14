@@ -363,6 +363,11 @@ class LibraryItemWidget(QFrame):
         self.refresh_downloaded(card_vm.is_downloaded)
 
         # Fade-in animation: 0→100% opacity over 240ms with a soft ease-out.
+        # IMPORTANT: QGraphicsOpacityEffect renders the widget into an
+        # off-screen pixmap and eats mouse events for child widgets (known
+        # Qt issue QTBUG-59187). We remove the effect as soon as the fade
+        # completes so the checkbox and other interactive overlays start
+        # receiving clicks again.
         self._opacity_fx = QGraphicsOpacityEffect(self)
         self._opacity_fx.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_fx)
@@ -370,6 +375,26 @@ class LibraryItemWidget(QFrame):
         self._fade_anim.setDuration(240)
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
+        self._fade_anim.finished.connect(self._on_fade_done)
+
+    def _on_fade_done(self) -> None:
+        """Drop the opacity effect once the fade is over so clicks work."""
+        self.setGraphicsEffect(None)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        """Clicking anywhere on the card toggles the checkbox.
+
+        Clicks that land directly on the checkbox are handled by the
+        checkbox itself before this method runs (Qt delivers events to
+        the topmost widget first), so we don't double-toggle.
+        Downloaded cards have the checkbox hidden and are inert.
+        """
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.checkbox.isVisible()
+        ):
+            self.checkbox.setChecked(not self.checkbox.isChecked())
+        super().mousePressEvent(event)
         self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def play_fade_in(self) -> None:
