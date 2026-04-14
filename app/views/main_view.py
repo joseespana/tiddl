@@ -44,13 +44,47 @@ QUALITY_OPTIONS = [
     ("AAC 96 kbps", "low"),
 ]
 
-SIDEBAR_TABS = [
-    ("Playlists",    "playlists"),
-    ("Albums",       "albums"),
-    ("Artists",      "artists"),
-    ("Downloaded",   "downloaded"),
-    ("Search Tidal", "search"),
+# Sidebar sections — each group has a header plus its tab buttons.
+# Flow mirrors the app's purpose: explore your Tidal library → queue
+# downloads → review what's offline → search the catalog for extras.
+SIDEBAR_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
+    (
+        "YOUR LIBRARY",
+        [
+            ("Playlists", "playlists"),
+            ("Albums",    "albums"),
+            ("Artists",   "artists"),
+        ],
+    ),
+    (
+        "OFFLINE",
+        [
+            ("Downloaded", "downloaded"),
+        ],
+    ),
+    (
+        "DISCOVER",
+        [
+            ("Search Tidal", "search"),
+        ],
+    ),
 ]
+
+# Back-compat flat list (some older code paths iterate this directly).
+SIDEBAR_TABS = [
+    entry for _, tabs in SIDEBAR_SECTIONS for entry in tabs
+]
+
+# Placeholder text for the in-view filter, per tab. Makes it obvious
+# the top search only filters what's already loaded — vs the Search
+# Tidal tab which hits the remote API.
+_FILTER_PLACEHOLDER = {
+    "playlists":  "Filter playlists…",
+    "albums":     "Filter albums…",
+    "artists":    "Filter artists…",
+    "downloaded": "Filter downloaded…",
+    "search":     "Filter results…",
+}
 
 ITEM_HEIGHT = 68
 
@@ -600,13 +634,24 @@ class MainView(QMainWindow):
         lay.addWidget(logo)
 
         self._tab_buttons: dict[str, QPushButton] = {}
-        for label, key in SIDEBAR_TABS:
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setStyleSheet(_tab_btn_style())
-            btn.clicked.connect(lambda _, k=key: self.tab_requested.emit(k))
-            lay.addWidget(btn)
-            self._tab_buttons[key] = btn
+        for section_title, section_tabs in SIDEBAR_SECTIONS:
+            header = QLabel(section_title)
+            header.setStyleSheet(
+                "color:#555;font-size:10px;font-weight:bold;"
+                "letter-spacing:1px;padding:10px 8px 4px;"
+            )
+            lay.addWidget(header)
+
+            for label, key in section_tabs:
+                btn = QPushButton(label)
+                btn.setCheckable(True)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setStyleSheet(_tab_btn_style())
+                btn.clicked.connect(
+                    lambda _, k=key: self.tab_requested.emit(k)
+                )
+                lay.addWidget(btn)
+                self._tab_buttons[key] = btn
 
         lay.addStretch()
 
@@ -648,10 +693,14 @@ class MainView(QMainWindow):
         top_lay.addWidget(self._tab_title)
 
         self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText("Search…")
+        self._search_box.setPlaceholderText("Filter this view…")
         self._search_box.setClearButtonEnabled(True)
-        self._search_box.setFixedWidth(200)
+        self._search_box.setFixedWidth(220)
         self._search_box.setStyleSheet(_input_style())
+        self._search_box.setToolTip(
+            "Filters the items already loaded on this tab. "
+            "Does NOT query Tidal — use the Search Tidal tab for that."
+        )
         self._search_box.textChanged.connect(self.filter_changed)
         top_lay.addWidget(self._search_box)
         top_lay.addStretch()
@@ -843,17 +892,32 @@ class MainView(QMainWindow):
 
     def _make_search_panel(self) -> QWidget:
         self._search_panel = QFrame()
+        # Cyan accent border signals this is the "live API" search panel,
+        # distinct from the plain grey filter in the top bar.
         self._search_panel.setStyleSheet(
-            "background:#181818; border-bottom:1px solid #2a2a2a;"
+            "background:#181818; border-bottom:1px solid rgba(0,255,255,60);"
         )
         self._search_panel.setVisible(False)
         sp = QHBoxLayout(self._search_panel)
         sp.setContentsMargins(16, 10, 16, 10)
         sp.setSpacing(8)
 
+        lens = QLabel("🔎")
+        lens.setStyleSheet(
+            "color:#0ff; font-size:14px; background:transparent;"
+            "padding-right:4px;"
+        )
+        sp.addWidget(lens)
+
         self._tidal_query = QLineEdit()
-        self._tidal_query.setPlaceholderText("Search Tidal…")
+        self._tidal_query.setPlaceholderText(
+            "Search the Tidal catalog (artists, albums, playlists)…"
+        )
         self._tidal_query.setStyleSheet(_input_style(13))
+        self._tidal_query.setToolTip(
+            "Live search against Tidal's API. Use this to find music "
+            "that isn't already in your library."
+        )
         self._tidal_query.returnPressed.connect(self._emit_tidal_search)
         sp.addWidget(self._tidal_query, 1)
 
@@ -1067,6 +1131,9 @@ class MainView(QMainWindow):
         self._select_btn.setText("Select All")
         self._search_box.blockSignals(True)
         self._search_box.clear()
+        self._search_box.setPlaceholderText(
+            _FILTER_PLACEHOLDER.get(tab, "Filter this view…")
+        )
         self._search_box.blockSignals(False)
         # Playlist sub-tabs are only meaningful on the Playlists tab
         self._pl_subtabs.setVisible(tab == "playlists")
