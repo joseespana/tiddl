@@ -278,6 +278,7 @@ class LibraryItemWidget(QFrame):
     """
 
     check_changed = Signal()
+    detail_requested = Signal(CardVM)
 
     def __init__(
         self,
@@ -443,6 +444,20 @@ class LibraryItemWidget(QFrame):
         super().mousePressEvent(event)
         self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        """Double-click opens the detail dialog for this card.
+
+        The checkbox already consumed the first click so the card state
+        toggled on single-press is undone here — we flip it back so the
+        double-click is net-neutral for selection.
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Undo the selection-toggle that ran on the first mousePressEvent.
+            if self.checkbox.isVisible():
+                self.checkbox.setChecked(not self.checkbox.isChecked())
+            self.detail_requested.emit(self._vm)
+        super().mouseDoubleClickEvent(event)
+
     def play_fade_in(self) -> None:
         """Trigger the entry fade-in animation."""
         self._fade_anim.start()
@@ -542,6 +557,7 @@ class MainView(QMainWindow):
     filter_changed = Signal(str)
     select_all_toggled = Signal(bool)
     resync_requested = Signal()
+    detail_requested = Signal(CardVM)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1039,6 +1055,7 @@ class MainView(QMainWindow):
         widget = LibraryItemWidget(vm)
         widget._sep = None  # presenter checks `if w._sep:` — always falsy now
         widget.check_changed.connect(self.update_select_btn)
+        widget.detail_requested.connect(self.detail_requested)
 
         n = len(self.item_widgets)
         row, col = divmod(n, self._grid_columns)

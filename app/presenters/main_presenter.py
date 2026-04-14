@@ -8,8 +8,11 @@ from app.views.main_view import MainView
 from app.worker_library import LibraryWorker
 from app.worker_downloaded import DownloadedWorker
 from app.worker_search import SearchWorker
+from app.worker_detail import DetailWorker
 from app.models.disk_cache import DiskCache
 from app.models.card_mapper import to_card_vm, compute_downloaded
+from app.models.card_vm import CardVM
+from app.views.detail_dialog import DetailDialog
 from app.downloads.download_manager import DownloadManager, DownloadStatus
 from app.api_client import build_api
 
@@ -41,6 +44,9 @@ class MainPresenter(QObject):
         self._downloaded_thread: Optional[QThread] = None
         self._search_worker: Optional[SearchWorker] = None
         self._search_thread: Optional[QThread] = None
+        self._detail_worker: Optional[DetailWorker] = None
+        self._detail_thread: Optional[QThread] = None
+        self._detail_dialog: Optional[DetailDialog] = None
 
         # Threads that have been asked to stop but haven't finished yet.
         # We keep Python references here so the C++ QThread isn't destroyed
@@ -68,6 +74,7 @@ class MainPresenter(QObject):
         self._view.filter_changed.connect(self._filter_list)
         self._view.select_all_toggled.connect(self._toggle_select_all)
         self._view.resync_requested.connect(self._resync)
+        self._view.detail_requested.connect(self._open_detail)
 
     def _connect_download_manager(self) -> None:
         self._dl_manager.log_line.connect(self._on_dl_log_line)
@@ -218,6 +225,39 @@ class MainPresenter(QObject):
         self._search_worker = worker
         self._search_thread = thread
         self._start_worker(worker, thread)
+
+    # ── Detail view ───────────────────────────────────────────────────────────
+
+    def _open_detail(self, vm: CardVM) -> None:
+        """Open the detail dialog for *vm* and spawn a worker to populate it."""
+        if not vm or not vm.ident:
+            return
+        # Park any in-flight detail worker so it doesn't race against the new one.
+        self._stop_worker(self._detail_worker, self._detail_thread)
+        self._detail_worker = None
+        self._detail_thread = None
+
+        dialog = DetailDialog.open_for(
+            self._view, vm.title, vm.kind, vm.cover_url
+        )
+        self._detail_dialog = dialog
+        dialog.finished.connect(self._on_detail_dialog_closed)
+
+        worker = DetailWorker(self._api, vm.kind, vm.ident)
+        thread = QThread()
+        worker.ready.connect(dialog.show_vm)
+        worker.error.connect(dialog.show_error)
+        self._detail_worker = worker
+        self._detail_thread = thread
+        self._start_worker(worker, thread)
+
+    def _on_detail_dialog_closed(self, *_: object) -> None:
+        """Clear the strong dialog reference once the modal closes."""
+        self._detail_dialog = None
+        # Best-effort stop of the worker if it's still running.
+        self._stop_worker(self._detail_worker, self._detail_thread)
+        self._detail_worker = None
+        self._detail_thread = None
 
     # ── Downloads ─────────────────────────────────────────────────────────────
 
@@ -402,6 +442,7 @@ class MainPresenter(QObject):
             (self._lib_worker, self._lib_thread),
             (self._downloaded_worker, self._downloaded_thread),
             (self._search_worker, self._search_thread),
+            (self._detail_worker, self._detail_thread),
         ]:
             try:
                 if worker:
