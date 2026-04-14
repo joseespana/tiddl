@@ -6,7 +6,7 @@ via a ThreadPoolExecutor. The source-of-truth URL list comes from the
 SQLite-backed :class:`app.models.index_db.IndexDB`.
 """
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from PySide6.QtCore import QObject, Signal
 
@@ -14,10 +14,9 @@ from tiddl.core.api.api import TidalAPI
 
 from app.models.index_db import IndexDB
 from app.worker_index import _TIDAL_URL_RE
+from app.workers_base import fanout
 
 log = logging.getLogger(__name__)
-
-_MAX_WORKERS = 8
 
 
 class DownloadedWorker(QObject):
@@ -43,14 +42,14 @@ class DownloadedWorker(QObject):
         super().__init__()
         self.api = api
         self.download_path = download_path
-        self._interrupted = False
+        self._interrupted = threading.Event()
 
     def interrupt(self) -> None:
         """Request the worker to stop at the next iteration checkpoint."""
-        self._interrupted = True
+        self._interrupted.set()
 
-    def _fetch(self, url: str):
-        """Resolve a single URL to a Tidal API model."""
+    def _resolve(self, url: str):
+        """Resolve a single URL to a Tidal API model (or None)."""
         m = _TIDAL_URL_RE.search(url)
         if not m:
             return None
@@ -77,31 +76,17 @@ class DownloadedWorker(QObject):
                 log.warning("Failed to open index DB: %s", exc)
                 urls = []
 
-            if not urls or self._interrupted:
+            if not urls or self._interrupted.is_set():
                 self.finished.emit()
                 return
 
-            pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
-            try:
-                futures = {pool.submit(self._fetch, url): url for url in urls}
-                for fut in as_completed(futures):
-                    if self._interrupted:
-                        break
-                    url = futures[fut]
-                    try:
-                        item = fut.result()
-                    except Exception as exc:
-                        log.warning(
-                            "Failed to load downloaded item %s: %s", url, exc,
-                        )
-                        continue
-                    if item is not None:
-                        self.item_ready.emit(item)
-            finally:
-                pool.shutdown(
-                    wait=not self._interrupted,
-                    cancel_futures=self._interrupted,
-                )
+            fanout(
+                self._resolve,
+                urls,
+                self.item_ready.emit,
+                self._interrupted,
+                label="url",
+            )
 
             self.finished.emit()
         except Exception as exc:

@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.models.card_vm import CardVM
+
 # ── Quality options ───────────────────────────────────────────────────────────
 QUALITY_OPTIONS = [
     ("Best Available per track (auto)", "max"),
@@ -227,20 +229,23 @@ GRID_MARGIN = 16
 
 
 class LibraryItemWidget(QFrame):
-    """A square card for a library item (Tidal/Spotify-style)."""
+    """A square card for a library item (Tidal/Spotify-style).
+
+    The card is populated from a pure-data ``CardVM`` DTO — it no longer
+    imports Tidal core models or does ``isinstance`` checks.
+    """
 
     check_changed = Signal()
 
     def __init__(
         self,
-        item_data,
-        cache=None,
+        card_vm: CardVM,
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.item_data = item_data
+        self._vm = card_vm
         self._sep = None  # presenter checks `if w._sep:` — always falsy now
-        self._source: str = ""
+        self._source: str = card_vm.source
         self.setFixedSize(CARD_W, CARD_H)
         self.setObjectName("LibraryItemWidget")
         self._base_qss = (
@@ -264,7 +269,7 @@ class LibraryItemWidget(QFrame):
         )
         outer.addWidget(self._cover_container)
 
-        cover_url = self._cover(item_data)
+        cover_url = card_vm.cover_url
         self._cover_lbl = CoverLabel(cover_url, size=COVER_SIZE, parent=self._cover_container)
         self._cover_lbl.setStyleSheet(
             "background:#0a0a0a;"
@@ -304,8 +309,8 @@ class LibraryItemWidget(QFrame):
         text_lay.setContentsMargins(8, 8, 8, 8)
         text_lay.setSpacing(4)
 
-        title_text = self._title(item_data)
-        sub_text = self._subtitle(item_data)
+        title_text = card_vm.title
+        sub_text = card_vm.subtitle
         self._title_cache = title_text.lower()
         self._sub_cache = sub_text.lower()
 
@@ -335,7 +340,7 @@ class LibraryItemWidget(QFrame):
         badge_row.setContentsMargins(0, 2, 0, 0)
         badge_row.setSpacing(6)
 
-        itype = self._item_type(item_data)
+        itype = card_vm.kind
         self._type_badge = QLabel(_BADGE_LABEL.get(itype, ""), text_wrap)
         self._type_badge.setStyleSheet(_BADGE_QSS.get(itype, ""))
         self._type_badge.setVisible(bool(_BADGE_LABEL.get(itype)))
@@ -355,7 +360,7 @@ class LibraryItemWidget(QFrame):
 
         outer.addWidget(text_wrap, 1)
 
-        self.refresh_downloaded(cache)
+        self.refresh_downloaded(card_vm.is_downloaded)
 
         # Fade-in animation: 0→100% opacity over 240ms with a soft ease-out.
         self._opacity_fx = QGraphicsOpacityEffect(self)
@@ -384,18 +389,22 @@ class LibraryItemWidget(QFrame):
 
     def get_url(self) -> str:
         """Return the Tidal URL for this item, or empty string if unavailable."""
-        d = self.item_data
-        if hasattr(d, "uuid"):
-            return f"https://tidal.com/playlist/{d.uuid}"
-        if hasattr(d, "url") and d.url:
-            return d.url
-        return ""
+        return self._vm.url
 
-    def refresh_downloaded(self, cache) -> None:
-        """Update downloaded badge, dim overlay, checkbox visibility + cursor."""
-        is_dl = self._check_downloaded(cache)
-        self._badge.setVisible(is_dl)
-        if is_dl:
+    def get_title(self) -> str:
+        """Return the card's title text (used by the presenter for warnings)."""
+        return self._vm.title
+
+    def refresh_downloaded(self, is_downloaded: bool) -> None:
+        """Update downloaded badge, dim overlay, checkbox visibility + cursor.
+
+        Args:
+            is_downloaded: Whether this card should render as "already
+                downloaded" (hides the checkbox, dims the cover, shows
+                the green badge).
+        """
+        self._badge.setVisible(is_downloaded)
+        if is_downloaded:
             # Hide the checkbox entirely (cannot be re-selected)
             self.checkbox.setChecked(False)
             self.checkbox.setVisible(False)
@@ -407,83 +416,6 @@ class LibraryItemWidget(QFrame):
             self.checkbox.raise_()
             self._dim_overlay.setVisible(False)
             self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-
-    def _check_downloaded(self, cache) -> bool:
-        if cache is None:
-            return False
-        d = self.item_data
-        try:
-            from tiddl.core.api.models import Playlist as TPlaylist, Album as TAlbum
-
-            if isinstance(d, TPlaylist):
-                return cache.has_playlist(d.title, uuid=d.uuid)
-
-            if isinstance(d, TAlbum):
-                artist = d.artist.name if getattr(d, "artist", None) else ""
-                return cache.has_album(artist, d.title, album_id=str(d.id))
-
-            # Artist
-            name = getattr(d, "name", None)
-            aid = str(getattr(d, "id", ""))
-            if name:
-                return cache.has_artist(name, artist_id=aid)
-        except Exception:
-            pass
-        return False
-
-    @staticmethod
-    def _item_type(d) -> str:
-        """Return 'playlist', 'album', or 'artist' for any Tidal model object."""
-        try:
-            from tiddl.core.api.models import Playlist as _P, Album as _A
-            if isinstance(d, _P):
-                return "playlist"
-            if isinstance(d, _A):
-                return "album"
-        except Exception:
-            pass
-        if hasattr(d, "artistTypes") or (
-            not hasattr(d, "title") and not hasattr(d, "numberOfTracks")
-        ):
-            return "artist"
-        if hasattr(d, "numberOfTracks"):
-            return "album"
-        if hasattr(d, "uuid"):
-            return "playlist"
-        return "album"
-
-    @staticmethod
-    def _cover(d) -> str | None:
-        for attr in ("squareImage", "cover", "picture"):
-            v = getattr(d, attr, None)
-            if v:
-                return v
-        return None
-
-    @staticmethod
-    def _title(d) -> str:
-        return getattr(d, "title", getattr(d, "name", "Unknown"))
-
-    @staticmethod
-    def _subtitle(d) -> str:
-        # Playlists: prefer creator name + track count
-        if hasattr(d, "uuid"):
-            n = getattr(d, "numberOfTracks", None)
-            creator = getattr(d, "creator", None)
-            cname = getattr(creator, "name", None) if creator else None
-            if cname and n:
-                return f"{cname} · {n} tracks"
-            if n:
-                return f"Playlist · {n} tracks"
-            return "Playlist"
-        if hasattr(d, "numberOfTracks"):
-            artist = (d.artist.name + " · ") if getattr(d, "artist", None) else ""
-            return f"{artist}{d.numberOfTracks} tracks"
-        if hasattr(d, "artistTypes") or not hasattr(d, "title"):
-            pop = getattr(d, "popularity", None)
-            return f"Popularity: {pop}" if pop else "Artist"
-        return ""
 
 
 # ── Grid container that forwards resize events ────────────────────────────────
@@ -1020,14 +952,12 @@ class MainView(QMainWindow):
         )
         self.update_select_btn()
 
-    def add_item(self, item_data, cache, source: str = "") -> None:
+    def add_item(self, vm: CardVM) -> None:
         """Append a library item card to the grid.
 
         Args:
-            item_data: Tidal API model object (Playlist, Album, Artist …).
-            cache: DiskCache instance used to initialise the downloaded badge,
-                or None.
-            source: Sub-tab source tag (``"owned"``, ``"liked"``, or ``""``).
+            vm: Fully-populated :class:`CardVM` DTO; the view does not
+                import or inspect any Tidal core models.
         """
         # Hide loading label on first item
         idx = self._list_layout.indexOf(self._loading_label)
@@ -1035,8 +965,7 @@ class MainView(QMainWindow):
             self._list_layout.removeWidget(self._loading_label)
             self._loading_label.setVisible(False)
 
-        widget = LibraryItemWidget(item_data, cache)
-        widget._source = source
+        widget = LibraryItemWidget(vm)
         widget._sep = None  # presenter checks `if w._sep:` — always falsy now
         widget.check_changed.connect(self.update_select_btn)
 
@@ -1048,6 +977,7 @@ class MainView(QMainWindow):
 
         # Apply any active search filter + sub-tab filter immediately
         q = self._search_box.text().strip().lower()
+        source = vm.source
         subtab_ok = (
             getattr(self, "_current_subtab", "all") in ("all", source)
         ) if source else True
@@ -1142,6 +1072,37 @@ class MainView(QMainWindow):
         """Update the downloaded track counter."""
         self._dl_count_lbl.setText(f"{done} track{'s' if done != 1 else ''}")
 
+    def show_download_error(self, message: str) -> None:
+        """Flash a red failure indicator on the download status card.
+
+        Sets the track label to a short "Failed" summary with a tooltip
+        containing the full error message (cleared after 10s). Also
+        paints the down-arrow red for the same duration so the user
+        can't miss that something went wrong.
+        """
+        from PySide6.QtCore import QTimer  # local import — keeps top clean
+        # Make sure the card is visible even if a prior success hid it.
+        self._dl_status_card.setVisible(True)
+        short = message.strip()
+        # Keep it to one line; the full text lives in the tooltip.
+        first_line = short.splitlines()[0] if short else "Download failed"
+        self._dl_track_lbl.setText(first_line[:120])
+        self._dl_track_lbl.setToolTip(short)
+        self._dl_track_lbl.setStyleSheet("color:#f06060; font-size:12px;")
+        self._dl_arrow.setText("\u26a0")
+        self._dl_arrow.setStyleSheet(
+            "color:#f06060; font-size:16px; font-weight:bold;"
+        )
+
+        def _clear() -> None:
+            try:
+                self._dl_track_lbl.setToolTip("")
+                self._dl_track_lbl.setStyleSheet("color:#ddd; font-size:12px;")
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(10_000, _clear)
+
     def hide_download_status(self) -> None:
         """Hide the download status card and progress bar after completion."""
         # Don't hide immediately — leave visible so user can see the final state.
@@ -1184,7 +1145,7 @@ class MainView(QMainWindow):
     def get_checked_items_without_url(self) -> list[str]:
         """Return titles of visible, checked items that have no URL."""
         return [
-            LibraryItemWidget._title(w.item_data)
+            w.get_title()
             for w in self.item_widgets
             if w.isVisible() and w.is_checked() and not w.get_url()
         ]
@@ -1230,8 +1191,13 @@ class MainView(QMainWindow):
     def refresh_badges(self, cache) -> None:
         """Refresh the downloaded badge on every item widget.
 
+        Recomputes ``is_downloaded`` per card from the DTO the card was
+        built from. Kept here (rather than the presenter) for back-compat
+        with any caller that already passes a DiskCache in.
+
         Args:
             cache: Updated DiskCache instance, or None to clear all badges.
         """
+        from app.models.card_mapper import compute_downloaded
         for w in self.item_widgets:
-            w.refresh_downloaded(cache)
+            w.refresh_downloaded(compute_downloaded(w._vm, cache))

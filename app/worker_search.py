@@ -4,6 +4,7 @@ SearchWorker — searches the Tidal catalog and emits matching items.
 Uses the QObject + moveToThread pattern instead of QThread subclassing.
 """
 import logging
+import threading
 from typing import Literal
 
 from PySide6.QtCore import QObject, Signal
@@ -44,6 +45,11 @@ class SearchWorker(QObject):
         self.api = api
         self.query = query
         self.search_type = search_type
+        self._interrupted = threading.Event()
+
+    def interrupt(self) -> None:
+        """Request the worker to stop (best-effort — a search is one call)."""
+        self._interrupted.set()
 
     def run(self) -> None:
         """Run the Tidal search and emit results.

@@ -2,9 +2,11 @@
 Login window — Tidal device-code OAuth flow.
 """
 import logging
+import os
 import subprocess
 import sys
 from time import time
+from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QFont, QGuiApplication, QDesktopServices
@@ -19,6 +21,14 @@ from tiddl.core.auth.api import AuthAPI
 from tiddl.core.auth.exceptions import AuthClientError
 
 
+_ALLOWED_HOSTS = {
+    "tidal.com",
+    "auth.tidal.com",
+    "link.tidal.com",
+    "listen.tidal.com",
+}
+
+
 def _normalize_url(url: str) -> str:
     """Ensure *url* has an https:// scheme (Tidal sometimes omits it)."""
     if url and not url.startswith(("http://", "https://")):
@@ -26,13 +36,49 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+def _is_safe_tidal_url(url: str) -> bool:
+    """Return True iff *url* uses http/https and points at a Tidal host.
+
+    Allows any subdomain of ``tidal.com`` plus the explicit allow-list
+    above. Anything else (missing scheme, ``file://``, ``javascript:``,
+    unrelated hosts, …) is rejected.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if host in _ALLOWED_HOSTS:
+        return True
+    if host == "tidal.com" or host.endswith(".tidal.com"):
+        return True
+    return False
+
+
 def _open_url(url: str) -> None:
-    """Open *url* in the default browser, reliably on every platform."""
+    """Open *url* in the default browser, reliably on every platform.
+
+    Refuses to launch anything that isn't a Tidal http(s) URL.
+    """
     url = _normalize_url(url)
+    if not _is_safe_tidal_url(url):
+        log.warning("Refusing to open non-Tidal URL: %r", url)
+        return
     if sys.platform == "darwin":
         subprocess.Popen(["open", url])
     elif sys.platform == "win32":
-        subprocess.Popen(["start", url], shell=True)
+        # Use os.startfile (no shell) — avoids shell-injection risk
+        # from subprocess.Popen([..., url], shell=True).
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+        except OSError as exc:
+            log.warning("os.startfile failed for %r: %s", url, exc)
     else:
         QDesktopServices.openUrl(QUrl(url))
 from tiddl.cli.utils.auth.core import save_auth_data
@@ -181,7 +227,20 @@ class AuthWindow(QDialog):
 
         self._auth_expires_at = time() + self._device_resp.expiresIn
         self._code_box.setText(self._device_resp.userCode)
-        self._verification_url = _normalize_url(self._device_resp.verificationUriComplete)
+        candidate_url = _normalize_url(self._device_resp.verificationUriComplete)
+        if not _is_safe_tidal_url(candidate_url):
+            log.warning(
+                "Tidal returned suspicious verification URL %r — refusing",
+                candidate_url,
+            )
+            QMessageBox.critical(
+                self, "Auth Error",
+                "Tidal returned an unexpected verification URL.\nPlease try again.",
+            )
+            self._action_btn.setEnabled(True)
+            self._action_btn.setText("Connect with Tidal")
+            return
+        self._verification_url = candidate_url
         self._url_display.setText(self._verification_url)
         self._code_frame.setVisible(True)
         self._status_label.setText("Waiting for authorization…")

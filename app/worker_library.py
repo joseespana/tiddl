@@ -7,7 +7,7 @@ parallelise the per-id detail fetches. The underlying
 reads and serialises writes, so 8 workers is a sensible sweet spot.
 """
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from typing import Literal
 
 from PySide6.QtCore import QObject, Signal
@@ -15,11 +15,11 @@ from PySide6.QtCore import QObject, Signal
 from tiddl.core.api.api import TidalAPI
 from tiddl.core.api.models.base import Favorites
 
+from app.workers_base import fanout
+
 log = logging.getLogger(__name__)
 
 LibraryTab = Literal["playlists", "albums", "artists"]
-
-_MAX_WORKERS = 8
 
 
 class LibraryWorker(QObject):
@@ -50,11 +50,11 @@ class LibraryWorker(QObject):
         super().__init__()
         self.api = api
         self.tab = tab
-        self._interrupted = False
+        self._interrupted = threading.Event()
 
     def interrupt(self) -> None:
         """Request the worker to stop at the next iteration checkpoint."""
-        self._interrupted = True
+        self._interrupted.set()
 
     def run(self) -> None:
         """Fetch library items and emit them one by one.
@@ -88,7 +88,7 @@ class LibraryWorker(QObject):
         # need the running total to know when to stop).
         offset = 0
         page_size = 50
-        while not self._interrupted:
+        while not self._interrupted.is_set():
             try:
                 page = self.api.get_user_playlists(
                     limit=page_size, offset=offset,
@@ -100,7 +100,7 @@ class LibraryWorker(QObject):
                 )
                 break
             for pl in page.items:
-                if self._interrupted:
+                if self._interrupted.is_set():
                     break
                 if pl.uuid in seen_uuids:
                     continue
@@ -114,89 +114,44 @@ class LibraryWorker(QObject):
             if not page.items or offset >= total:
                 break
 
-        if self._interrupted:
+        if self._interrupted.is_set():
             return
 
         # 2) FAVORITED playlists — concurrent fetch.
         uuids = [u for u in favorites.PLAYLIST if u not in seen_uuids]
-        if not uuids:
-            return
 
-        pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
-        try:
-            futures = {
-                pool.submit(self.api.get_playlist, playlist_uuid=u): u
-                for u in uuids
-            }
-            for fut in as_completed(futures):
-                if self._interrupted:
-                    break
-                uuid = futures[fut]
-                try:
-                    pl = fut.result()
-                except Exception as exc:
-                    log.warning("Failed to load playlist %s: %s", uuid, exc)
-                    continue
-                if not (pl.title and pl.title.strip()):
-                    continue
-                if pl.uuid in seen_uuids:
-                    continue
-                seen_uuids.add(pl.uuid)
-                self.item_ready_tagged.emit(pl, "liked")
-        finally:
-            pool.shutdown(
-                wait=not self._interrupted,
-                cancel_futures=self._interrupted,
-            )
+        def _emit_liked(pl) -> None:
+            if not (pl.title and pl.title.strip()):
+                return
+            if pl.uuid in seen_uuids:
+                return
+            seen_uuids.add(pl.uuid)
+            self.item_ready_tagged.emit(pl, "liked")
+
+        fanout(
+            lambda u: self.api.get_playlist(playlist_uuid=u),
+            uuids,
+            _emit_liked,
+            self._interrupted,
+            label="playlist",
+        )
 
     def _run_albums(self, favorites: Favorites) -> None:
         """Load favorited albums concurrently."""
-        ids = list(favorites.ALBUM)
-        if not ids:
-            return
-        pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
-        try:
-            futures = {
-                pool.submit(self.api.get_album, album_id=aid): aid
-                for aid in ids
-            }
-            for fut in as_completed(futures):
-                if self._interrupted:
-                    break
-                aid = futures[fut]
-                try:
-                    item = fut.result()
-                    self.item_ready.emit(item)
-                except Exception as exc:
-                    log.warning("Failed to load album %s: %s", aid, exc)
-        finally:
-            pool.shutdown(
-                wait=not self._interrupted,
-                cancel_futures=self._interrupted,
-            )
+        fanout(
+            lambda aid: self.api.get_album(album_id=aid),
+            list(favorites.ALBUM),
+            self.item_ready.emit,
+            self._interrupted,
+            label="album",
+        )
 
     def _run_artists(self, favorites: Favorites) -> None:
         """Load favorited artists concurrently."""
-        ids = list(favorites.ARTIST)
-        if not ids:
-            return
-        pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
-        try:
-            futures = {
-                pool.submit(self.api.get_artist, artist_id=aid): aid
-                for aid in ids
-            }
-            for fut in as_completed(futures):
-                if self._interrupted:
-                    break
-                aid = futures[fut]
-                try:
-                    item = fut.result()
-                    self.item_ready.emit(item)
-                except Exception as exc:
-                    log.warning("Failed to load artist %s: %s", aid, exc)
-        finally:
-            pool.shutdown(
-                wait=not self._interrupted,
-                cancel_futures=self._interrupted,
-            )
+        fanout(
+            lambda aid: self.api.get_artist(artist_id=aid),
+            list(favorites.ARTIST),
+            self.item_ready.emit,
+            self._interrupted,
+            label="artist",
+        )

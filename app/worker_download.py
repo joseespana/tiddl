@@ -6,6 +6,7 @@ Uses the QObject + moveToThread pattern instead of QThread subclassing.
 import logging
 import shutil
 import subprocess
+import threading
 
 from PySide6.QtCore import QObject, Signal
 
@@ -41,11 +42,11 @@ class DownloadWorker(QObject):
         self.urls = urls
         self.download_path = download_path
         self.quality = quality
-        self._interrupted = False
+        self._interrupted = threading.Event()
 
     def interrupt(self) -> None:
         """Request the worker to stop at the next iteration checkpoint."""
-        self._interrupted = True
+        self._interrupted.set()
 
     def run(self) -> None:
         """Download each URL in sequence, streaming log lines.
@@ -57,7 +58,7 @@ class DownloadWorker(QObject):
         total = len(self.urls)
 
         for idx, url in enumerate(self.urls, 1):
-            if self._interrupted:
+            if self._interrupted.is_set():
                 break
 
             self.log_line.emit(f"\n▶ Downloading {url}")
@@ -79,7 +80,7 @@ class DownloadWorker(QObject):
                     errors="replace",
                 )
                 for line in proc.stdout:
-                    if self._interrupted:
+                    if self._interrupted.is_set():
                         proc.terminate()
                         break
                     line = line.rstrip()

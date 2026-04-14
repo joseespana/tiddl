@@ -9,6 +9,7 @@ from app.worker_library import LibraryWorker
 from app.worker_downloaded import DownloadedWorker
 from app.worker_search import SearchWorker
 from app.models.disk_cache import DiskCache
+from app.models.card_mapper import to_card_vm, compute_downloaded
 from app.downloads.download_manager import DownloadManager, DownloadStatus
 from app.api_client import build_api
 
@@ -80,14 +81,22 @@ class MainPresenter(QObject):
 
     def _on_item_ready(self, item: object) -> None:
         """Deliver one library item to the view (always runs in main thread)."""
-        self._view.add_item(item, self._disk_cache)
+        vm = to_card_vm(item, self._disk_cache, source="")
+        self._view.add_item(vm)
 
     def _on_item_ready_tagged(self, item: object, source: str) -> None:
         """Deliver a tagged playlist item (owned/liked) to the view."""
-        self._view.add_item(item, self._disk_cache, source=source)
+        vm = to_card_vm(item, self._disk_cache, source=source)
+        self._view.add_item(vm)
 
     def _on_dl_log_line(self, _task_id: str, line: str) -> None:
         """Parse download log lines and update the status card."""
+        # Failure lines surfaced by DownloadManager._on_failed
+        if line.startswith("\u26a0"):
+            # Strip the leading "⚠ " prefix for a slightly cleaner label;
+            # the full line is what's shown in the tooltip.
+            self._view.show_download_error(line)
+            return
         # Parse "Downloaded <title>  <quality>" lines (two spaces before quality)
         if line.startswith("Downloaded "):
             import re as _re
@@ -332,7 +341,14 @@ class MainPresenter(QObject):
 
     def _rebuild_cache(self) -> None:
         self._disk_cache = DiskCache(self._view.get_download_path())
-        self._view.refresh_badges(self._disk_cache)
+        # Walk every card and push the freshly-computed downloaded flag.
+        # Keeps card DTOs immutable (frozen dataclass) — we simply re-skin.
+        for w in self._view.item_widgets:
+            try:
+                is_dl = compute_downloaded(w._vm, self._disk_cache)
+                w.refresh_downloaded(is_dl)
+            except Exception as exc:
+                log.warning("refresh_downloaded failed: %s", exc)
 
     def _on_path_changed(self, _: str) -> None:
         self._rebuild_cache()

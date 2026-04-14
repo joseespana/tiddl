@@ -1,4 +1,5 @@
 import json
+import os
 from logging import getLogger
 from pathlib import Path
 from typing import Any, Type, TypeVar, Callable, Optional
@@ -42,9 +43,28 @@ class TidalClient:
     ) -> None:
         self.on_token_expiry = on_token_expiry
         self.debug_path = debug_path
+        # ``ignored_parameters`` also strips matching *headers* from the
+        # stored cache key / request body (requests-cache 1.x), so the
+        # bearer token never hits the SQLite file. The default already
+        # includes "Authorization" but we pass it explicitly (plus the
+        # lower-case variant) to make the security intent obvious.
         self.session = CachedSession(
-            cache_name=cache_name, always_revalidate=omit_cache
+            cache_name=cache_name,
+            always_revalidate=omit_cache,
+            ignored_parameters=["Authorization", "authorization"],
         )
+        # Tighten permissions on the SQLite cache file. CachedSession
+        # creates it eagerly, so the path is valid as soon as __init__
+        # returns. Skip on Windows (chmod is effectively a no-op).
+        if os.name != "nt":
+            cache_file = Path(str(cache_name))
+            if cache_file.suffix != ".sqlite":
+                cache_file = cache_file.with_suffix(cache_file.suffix + ".sqlite")
+            try:
+                if cache_file.exists():
+                    os.chmod(cache_file, 0o600)
+            except OSError as exc:
+                log.warning("chmod 0600 on %s failed: %s", cache_file, exc)
         self.session.headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
