@@ -7,6 +7,7 @@ public methods that the presenter drives.
 """
 import html as _html
 import re
+import unicodedata
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -64,6 +65,47 @@ def _sanitize(s: str) -> str:
 def _norm(s: str) -> str:
     """Lowercase + strip for case-insensitive comparison."""
     return _sanitize(s).lower().strip()
+
+
+# Collapse any sequence of whitespace/separator/punctuation into a single space.
+# Kept as a module constant so the regex is compiled once.
+_SEARCH_SEP_RE = re.compile(r"[\s\-_.,;:!?¡¿'\"`´()\[\]{}/\\|]+")
+
+
+def _search_key(s: str) -> str:
+    """Fold a string to a diacritic-insensitive, case-insensitive lookup key.
+
+    - Unicode NFKD decomposes accented characters (``é`` → ``e`` + U+0301).
+    - Combining marks (category ``Mn``) are dropped so ``café`` and
+      ``cafe`` both produce ``cafe``.
+    - ``ñ`` decomposes to ``n`` + combining tilde, so ``peña`` and
+      ``pena`` both produce ``pena``.
+    - ``ß``/``ø``/``ł`` are preserved (they're not combining forms); the
+      user can still search by their ASCII approximation if desired.
+    - Lowercased, whitespace/punctuation collapsed to single spaces,
+      stripped.
+    """
+    if not s:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", s)
+    no_marks = "".join(
+        ch for ch in decomposed if not unicodedata.combining(ch)
+    )
+    collapsed = _SEARCH_SEP_RE.sub(" ", no_marks).strip().lower()
+    return collapsed
+
+
+def _matches_query(query_key: str, haystack_key: str) -> bool:
+    """Return True if every whitespace-separated token in *query_key*
+    appears as a substring in *haystack_key*.
+
+    Tokens are AND-combined and order-independent so ``"daft disco"``
+    finds a ``"Discovery — Daft Punk"`` entry.
+    Both inputs must already be pre-folded via :func:`_search_key`.
+    """
+    if not query_key:
+        return True
+    return all(tok in haystack_key for tok in query_key.split())
 
 
 # ── Network manager singleton ─────────────────────────────────────────────────
@@ -311,8 +353,12 @@ class LibraryItemWidget(QFrame):
 
         title_text = card_vm.title
         sub_text = card_vm.subtitle
-        self._title_cache = title_text.lower()
-        self._sub_cache = sub_text.lower()
+        # Pre-folded, diacritic-insensitive search index. Legacy
+        # _title_cache / _sub_cache kept as aliases pointing to the
+        # same key so any external caller keeps working.
+        self._search_key = _search_key(f"{title_text} {sub_text}")
+        self._title_cache = self._search_key
+        self._sub_cache = self._search_key
 
         self._title_lbl = QLabel(text_wrap)
         self._title_lbl.setStyleSheet(
@@ -703,11 +749,11 @@ class MainView(QMainWindow):
     def _apply_subtab_filter(self) -> None:
         """Hide/show rows based on the active sub-tab (all / owned / liked)."""
         key = self._current_subtab
-        q = self._search_box.text().strip().lower()
+        qkey = _search_key(self._search_box.text())
         for w in self.item_widgets:
             src = getattr(w, "_source", "")
             subtab_ok = key == "all" or src == key
-            search_ok = not q or q in w._title_cache or q in w._sub_cache
+            search_ok = _matches_query(qkey, w._search_key)
             visible = subtab_ok and search_ok
             w.setVisible(visible)
             if w._sep:
@@ -1001,12 +1047,12 @@ class MainView(QMainWindow):
         widget.play_fade_in()
 
         # Apply any active search filter + sub-tab filter immediately
-        q = self._search_box.text().strip().lower()
+        qkey = _search_key(self._search_box.text())
         source = vm.source
         subtab_ok = (
             getattr(self, "_current_subtab", "all") in ("all", source)
         ) if source else True
-        search_ok = not q or q in widget._title_cache or q in widget._sub_cache
+        search_ok = _matches_query(qkey, widget._search_key)
         visible = subtab_ok and search_ok
         if not visible:
             widget.setVisible(False)

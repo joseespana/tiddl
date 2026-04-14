@@ -323,13 +323,10 @@ class MainPresenter(QObject):
     # ── Filter & selection ────────────────────────────────────────────────────
 
     def _filter_list(self, text: str) -> None:
-        q = text.strip().lower()
-        for w in self._view.item_widgets:
-            visible = not q or q in w._title_cache or q in w._sub_cache
-            w.setVisible(visible)
-            if w._sep:
-                w._sep.setVisible(visible)
-        self._view.update_select_btn()
+        # Delegate to the view so the diacritic-insensitive search key
+        # logic stays in one place (main_view._apply_subtab_filter reads
+        # the same _search_box and _current_subtab state).
+        self._view._apply_subtab_filter()
 
     def _toggle_select_all(self, checked: bool) -> None:
         for w in self._view.item_widgets:
