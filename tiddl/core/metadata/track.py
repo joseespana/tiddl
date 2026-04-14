@@ -27,6 +27,7 @@ class Metadata:
     )
     cover_data: bytes | None = None
     comment: str = ""
+    genre: str = ""
 
 
 def add_flac_metadata(track_path: Path, metadata: Metadata) -> None:
@@ -57,6 +58,7 @@ def add_flac_metadata(track_path: Path, metadata: Metadata) -> None:
             "COPYRIGHT": metadata.copyright or "",
             "ISRC": metadata.isrc,
             "COMMENT": metadata.comment,
+            "GENRE": metadata.genre,
         }
     )
 
@@ -97,6 +99,7 @@ def add_m4a_metadata(track_path: Path, metadata: Metadata) -> None:
             "date": metadata.date,
             "copyright": metadata.copyright or "",
             "comment": metadata.comment,
+            "genre": metadata.genre,
         }
     )
 
@@ -136,6 +139,7 @@ def add_track_metadata(
         list[AlbumItemsCredits.ItemWithCredits.CreditsEntry] | None
     ) = None,
     comment: str = "",
+    genre: str = "",
 ) -> None:
     """Add FLAC or M4A metadata based on file extension."""
 
@@ -159,6 +163,7 @@ def add_track_metadata(
         cover_data=cover_data,
         credits=credits_contributors,
         comment=comment,
+        genre=genre,
     )
 
     ext = path.suffix.lower()

@@ -19,6 +19,7 @@ from .exceptions import ApiError
 T = TypeVar("T", bound=BaseModel)
 
 API_URL = "https://api.tidal.com/v1"
+API_V2_URL = "https://api.tidal.com/v2"
 MAX_RETRIES = 5
 RETRY_DELAY = 0.5
 
@@ -171,3 +172,48 @@ class TidalClient:
                 )
 
         return model.model_validate(data)
+
+    def fetch_v2(
+        self,
+        endpoint: str,
+        params: dict[str, Any] = {},
+        expire_after: int = NEVER_EXPIRE,
+    ) -> dict[str, Any]:
+        """
+        Fetch raw JSON from the Tidal v2 (JSON:API) endpoint.
+
+        Returns the decoded JSON dict. Does NOT raise on non-200 status:
+        callers are expected to handle a possibly-empty / malformed
+        response and treat failures as "no data". Auth refresh on 401 is
+        still honored to reuse the same token flow as ``fetch``.
+        """
+
+        res = self.session.get(
+            f"{API_V2_URL}/{endpoint}", params=params, expire_after=expire_after
+        )
+
+        if res.status_code == 401 and self.on_token_expiry:
+            token = self.on_token_expiry()
+
+            if token:
+                self.token = token
+
+            res = self.session.get(
+                f"{API_V2_URL}/{endpoint}",
+                params=params,
+                expire_after=expire_after,
+            )
+
+        log.debug(
+            f"v2 {endpoint} {params} '{'HIT' if res.from_cache else 'MISS'}' [{res.status_code}]",
+        )
+
+        try:
+            data = res.json()
+        except JSONDecodeError:
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        return data

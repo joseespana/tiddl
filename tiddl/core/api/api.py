@@ -1,3 +1,4 @@
+from logging import getLogger
 from typing import Literal, TypeAlias
 
 from requests_cache import DO_NOT_CACHE, EXPIRE_IMMEDIATELY
@@ -30,6 +31,43 @@ from .models.resources import (
 from .models.review import AlbumReview
 
 ID: TypeAlias = str | int
+
+log = getLogger(__name__)
+
+# Genres rarely (if ever) change — cache them for a week.
+_GENRE_EXPIRE_AFTER = 604800
+
+
+def _parse_genre_names(payload: dict) -> list[str]:
+    """Extract genre names from a Tidal v2 JSON:API genres response.
+
+    Preserves order and de-duplicates. Returns an empty list on any
+    unexpected shape; never raises.
+    """
+
+    try:
+        included = payload.get("included") or []
+        if not isinstance(included, list):
+            return []
+
+        names: list[str] = []
+        for entry in included:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") != "genres":
+                continue
+            attrs = entry.get("attributes") or {}
+            if not isinstance(attrs, dict):
+                continue
+            name = attrs.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+
+        # preserve order, drop empties, de-dup
+        return list(dict.fromkeys(g for g in names if g))
+    except Exception as exc:  # pragma: no cover - defensive
+        log.debug("genre parse failed: %s", exc)
+        return []
 
 
 class Limits:
@@ -255,6 +293,67 @@ class TidalAPI:
             {"countryCode": self.country_code},
             expire_after=3600,
         )
+
+    def get_album_genres(self, album_id: ID) -> list[str]:
+        """Return the genre names for the given album via Tidal's v2 API.
+
+        Uses the JSON:API endpoint:
+            GET /v2/albums/{id}/relationships/genres
+                ?countryCode={cc}&locale=en_US&include=genres
+
+        Response shape::
+
+            {
+              "data": [{"id": "123", "type": "genres"}, ...],
+              "included": [
+                {"id": "123", "type": "genres", "attributes": {"name": "Pop"}},
+                ...
+              ]
+            }
+
+        Returns an empty list when the call fails, the response is malformed,
+        or no genres are linked. Only parsing errors are swallowed here;
+        transport / auth errors surface to the caller.
+        """
+
+        try:
+            data = self.client.fetch_v2(
+                f"albums/{album_id}/relationships/genres",
+                {
+                    "countryCode": self.country_code,
+                    "locale": "en_US",
+                    "include": "genres",
+                },
+                expire_after=_GENRE_EXPIRE_AFTER,
+            )
+        except Exception as exc:
+            log.debug("get_album_genres(%s) fetch failed: %s", album_id, exc)
+            return []
+
+        return _parse_genre_names(data)
+
+    def get_track_genres(self, track_id: ID) -> list[str]:
+        """Return the genre names for the given track via Tidal's v2 API.
+
+        Same JSON:API shape as :meth:`get_album_genres` but hits
+        ``/v2/tracks/{id}/relationships/genres``.
+        """
+
+        try:
+            data = self.client.fetch_v2(
+                f"tracks/{track_id}/relationships/genres",
+                {
+                    "countryCode": self.country_code,
+                    "locale": "en_US",
+                    "include": "genres",
+                },
+                expire_after=_GENRE_EXPIRE_AFTER,
+            )
+        except Exception as exc:
+            log.debug("get_track_genres(%s) fetch failed: %s", track_id, exc)
+            return []
+
+        return _parse_genre_names(data)
 
     def get_video_stream(self, video_id: ID, quality: StreamVideoQuality):
         return self.client.fetch(

@@ -203,12 +203,14 @@ def download_callback(
                 credits: list[AlbumItemsCredits.ItemWithCredits.CreditsEntry] = [],
                 cover: Cover | None = None,
                 album_review: str = "",
+                genre: str = "",
             ) -> None:
                 self.date = date
                 self.artist = artist
                 self.credits = credits
                 self.cover = cover
                 self.album_review = album_review
+                self.genre = genre
 
         async def handle_resource(resource: TidalResource):
             async def handle_item(
@@ -268,6 +270,7 @@ def download_callback(
                             date=track_metadata.date,
                             credits_contributors=track_metadata.credits,
                             comment=track_metadata.album_review,
+                            genre=track_metadata.genre,
                         )
 
                     elif isinstance(item, Video):
@@ -300,6 +303,15 @@ def download_callback(
                         ).normalized_text()
                     except Exception as e:
                         log.error(e)
+
+                album_genres: list[str] = []
+                try:
+                    album_genres = ctx.obj.api.get_album_genres(album.id)
+                except Exception as exc:
+                    log.debug("get_album_genres(%s) failed: %s", album.id, exc)
+
+                # at most 3 to keep tags short
+                album_genre = ", ".join(album_genres[:3])
 
                 while True:
                     album_items = ctx.obj.api.get_album_items_credits(
@@ -334,6 +346,7 @@ def download_callback(
                                         artist=album.artist.name if album.artist else "",
                                         credits=album_item.credits,
                                         album_review=album_review,
+                                        genre=album_genre,
                                     ),
                                 )
                             )
@@ -392,6 +405,13 @@ def download_callback(
                     if album.cover and (CONFIG.metadata.cover or save_cover):
                         cover = Cover(album.cover, size=CONFIG.cover.size)
 
+                    track_genres: list[str] = []
+                    try:
+                        track_genres = ctx.obj.api.get_track_genres(track.id)
+                    except Exception as exc:
+                        log.debug("get_track_genres(%s) failed: %s", track.id, exc)
+                    track_genre = ", ".join(track_genres[:3])
+
                     await handle_item(
                         item=track,
                         file_path=format_template(
@@ -404,6 +424,7 @@ def download_callback(
                             cover=cover,
                             date=str(album.releaseDate),
                             artist=album.artist.name if album.artist else "",
+                            genre=track_genre,
                             # credits are missing
                         ),
                     )
@@ -613,6 +634,19 @@ def download_callback(
                                 else:
                                     album = None
 
+                                pl_genres: list[str] = []
+                                try:
+                                    pl_genres = ctx.obj.api.get_track_genres(
+                                        playlist_item.item.id
+                                    )
+                                except Exception as exc:
+                                    log.debug(
+                                        "get_track_genres(%s) failed: %s",
+                                        playlist_item.item.id,
+                                        exc,
+                                    )
+                                pl_genre = ", ".join(pl_genres[:3])
+
                                 futures.append(
                                     handle_item(
                                         item=playlist_item.item,
@@ -624,7 +658,7 @@ def download_callback(
                                             playlist_index=playlist_index,
                                             quality=get_item_quality(playlist_item.item),
                                         ),
-                                        track_metadata=Metadata(),
+                                        track_metadata=Metadata(genre=pl_genre),
                                     )
                                 )
                             except ApiError as e:
