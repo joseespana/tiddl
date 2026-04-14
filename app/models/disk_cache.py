@@ -1,48 +1,49 @@
 """
-DiskCache — scans the download directory once and provides O(1) lookups.
+DiskCache — persistent, incremental scanner for the download directory.
 
-Avoids per-item filesystem calls during list rendering.
+Loads the cached (artist, album) pairs from the SQLite-backed
+:class:`app.models.index_db.IndexDB` on construction so the UI is ready
+immediately, then runs an mtime-based background refresh to absorb any
+new or changed folders. Large libraries (10k+ tracks) thus pay a full
+walk only once — on first launch.
 """
-import re
-from pathlib import Path
+from __future__ import annotations
 
-from app.worker_index import load_index
+import logging
+import re
+import threading
+from pathlib import Path
+from typing import Optional
+
+from app.models.index_db import IndexDB
+
+log = logging.getLogger(__name__)
 
 
 def _sanitize(s: str) -> str:
-    """Remove filesystem-unsafe characters from a string.
-
-    Args:
-        s: Input string.
-
-    Returns:
-        String with characters ``\\ / : " * ? < > |`` stripped.
-    """
+    """Remove filesystem-unsafe characters from *s*."""
     return re.sub(r'[\\/:"*?<>|]+', "", s)
 
 
 def _norm(s: str) -> str:
-    """Lowercase + strip for case-insensitive comparison.
-
-    Args:
-        s: Input string.
-
-    Returns:
-        Sanitized, lowercased and stripped string.
-    """
+    """Return *s* sanitized, lower-cased and stripped."""
     return _sanitize(s).lower().strip()
 
 
 class DiskCache:
-    """Scans the download directory once and provides O(1) lookups.
+    """Scans the download directory and provides O(1) lookups.
+
+    The public attributes and method signatures are identical to the
+    previous eager implementation; internally the data is now loaded
+    from SQLite on construction and refreshed in the background.
 
     Attributes:
         m3u_stems: Normalised playlist title stems found as .m3u files.
-        albums: Set of (artist_lower, album_lower) tuples from folder structure.
-        artists: Set of artist folder names (lowercased).
-        pl_uuids: Playlist UUIDs from the local index file.
-        album_ids: Album IDs (as strings) from the local index file.
-        artist_ids: Artist IDs (as strings) from the local index file.
+        albums: Set of ``(artist_norm, album_norm)`` tuples.
+        artists: Set of normalised artist folder names.
+        pl_uuids: Playlist UUIDs recorded in the index.
+        album_ids: Album IDs (as strings) recorded in the index.
+        artist_ids: Artist IDs (as strings) recorded in the index.
     """
 
     _SKIP_DIRS = {
@@ -51,11 +52,16 @@ class DiskCache:
     }
 
     def __init__(self, path: str) -> None:
-        """Initialise and populate the cache by scanning *path*.
+        """Initialise the cache for the directory at *path*.
+
+        Synchronously loads whatever is already in the SQLite cache so
+        the caller sees populated sets immediately; then enqueues a
+        background scan to pick up new/changed folders.
 
         Args:
             path: Absolute path to the download directory.
         """
+        self._path = path
         self.m3u_stems: set[str] = set()
         self.albums: set[tuple[str, str]] = set()
         self.artists: set[str] = set()
@@ -63,22 +69,58 @@ class DiskCache:
         self.album_ids: set[str] = set()
         self.artist_ids: set[str] = set()
 
+        self._refresh_lock = threading.Lock()
+        self._refresh_thread: Optional[threading.Thread] = None
+
         base = Path(path)
         if not base.exists():
             return
 
-        # UUID/ID-based index (reliable even after title changes)
-        idx = load_index(path)
-        self.pl_uuids = set(idx.get("playlist", []))
-        self.album_ids = set(str(i) for i in idx.get("album", []))
-        self.artist_ids = set(str(i) for i in idx.get("artist", []))
+        try:
+            self._db = IndexDB(path)
+        except Exception as exc:
+            log.warning("IndexDB open failed at %s: %s", path, exc)
+            self._db = None  # type: ignore[assignment]
+            # Without DB we still do a live walk so the UI is usable.
+            self._live_scan(base)
+            self._scan_m3u(base)
+            return
 
-        # M3U stems (for playlists without UUID in index)
+        # 1) Downloaded-items sets from SQLite.
+        self.pl_uuids = self._db.get_ids("playlist")
+        self.album_ids = self._db.get_ids("album")
+        self.artist_ids = self._db.get_ids("artist")
+
+        # 2) Seed albums/artists from the persisted scan cache.
+        for row in self._db.get_scan_rows():
+            if not row["has_audio"]:
+                continue
+            artist = row["artist"]
+            album = row["album"]
+            if artist and album:
+                self.albums.add((artist, album))
+                self.artists.add(artist)
+
+        # 3) M3U stems are cheap — do them synchronously.
+        self._scan_m3u(base)
+
+        # 4) Kick off background refresh (mtime-based, incremental).
+        self._start_background_refresh()
+
+    # ------------------------------------------------------------------
+    # Scanning
+    # ------------------------------------------------------------------
+    def _scan_m3u(self, base: Path) -> None:
+        """Populate :attr:`m3u_stems` from the ``m3u`` subdirectory."""
         m3u_dir = base / "m3u"
         if m3u_dir.exists():
-            self.m3u_stems = {_norm(f.stem) for f in m3u_dir.glob("*.m3u")}
+            try:
+                self.m3u_stems = {_norm(f.stem) for f in m3u_dir.glob("*.m3u")}
+            except Exception as exc:
+                log.warning("m3u scan failed: %s", exc)
 
-        # Artist / album folder structure
+    def _live_scan(self, base: Path) -> None:
+        """Fallback full walk used only when SQLite is unavailable."""
         try:
             for artist_dir in base.iterdir():
                 if not artist_dir.is_dir():
@@ -88,58 +130,165 @@ class DiskCache:
                 aname = _norm(artist_dir.name)
                 found_album = False
                 for album_dir in artist_dir.iterdir():
-                    if album_dir.is_dir():
-                        has_audio = (
-                            any(album_dir.glob("*.flac"))
-                            or any(album_dir.glob("*.m4a"))
-                        )
-                        if has_audio:
-                            self.albums.add((aname, _norm(album_dir.name)))
-                            found_album = True
+                    if album_dir.is_dir() and self._dir_has_audio(album_dir):
+                        self.albums.add((aname, _norm(album_dir.name)))
+                        found_album = True
                 if found_album:
                     self.artists.add(aname)
+        except Exception as exc:
+            log.warning("live scan failed: %s", exc)
+
+    @staticmethod
+    def _dir_has_audio(album_dir: Path) -> bool:
+        """Return True when *album_dir* contains at least one .flac/.m4a."""
+        try:
+            for entry in album_dir.iterdir():
+                if entry.is_file():
+                    suffix = entry.suffix.lower()
+                    if suffix == ".flac" or suffix == ".m4a":
+                        return True
         except Exception:
-            pass
+            return False
+        return False
+
+    def _start_background_refresh(self) -> None:
+        """Launch the incremental refresh on a daemon thread."""
+        t = threading.Thread(
+            target=self._run_refresh,
+            name="DiskCacheRefresh",
+            daemon=True,
+        )
+        self._refresh_thread = t
+        t.start()
+
+    def _run_refresh(self) -> None:
+        """Thread target — guarded to avoid concurrent refreshes."""
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
+            self._incremental_scan()
+        except Exception as exc:
+            log.warning("DiskCache refresh failed: %s", exc)
+        finally:
+            self._refresh_lock.release()
+
+    def _incremental_scan(self) -> None:
+        """Walk the download dir and upsert only changed folders."""
+        if self._db is None:
+            return
+        base = Path(self._path)
+        if not base.exists():
+            return
+
+        cached_mtimes = self._db.get_scan_mtimes()
+        seen_paths: set[str] = set()
+        new_rows: list[tuple[str, int, str | None, str | None, bool]] = []
+
+        new_albums: set[tuple[str, str]] = set()
+        new_artists: set[str] = set()
+
+        try:
+            artist_iter = list(base.iterdir())
+        except Exception as exc:
+            log.warning("iterdir(%s) failed: %s", base, exc)
+            return
+
+        for artist_dir in artist_iter:
+            if not artist_dir.is_dir():
+                continue
+            if artist_dir.name.lower() in self._SKIP_DIRS:
+                continue
+            aname = _norm(artist_dir.name)
+
+            try:
+                album_iter = list(artist_dir.iterdir())
+            except Exception:
+                continue
+
+            artist_found = False
+            for album_dir in album_iter:
+                if not album_dir.is_dir():
+                    continue
+                path_str = str(album_dir)
+                seen_paths.add(path_str)
+                try:
+                    mtime_ns = album_dir.stat().st_mtime_ns
+                except OSError:
+                    continue
+
+                bname = _norm(album_dir.name)
+
+                if cached_mtimes.get(path_str) == mtime_ns:
+                    # Unchanged — keep whatever the cache said.
+                    # (albums set was already seeded in __init__.)
+                    if (aname, bname) in self.albums:
+                        artist_found = True
+                    continue
+
+                has_audio = self._dir_has_audio(album_dir)
+                new_rows.append(
+                    (path_str, mtime_ns, aname, bname, has_audio),
+                )
+                if has_audio:
+                    new_albums.add((aname, bname))
+                    artist_found = True
+
+            if artist_found:
+                new_artists.add(aname)
+
+        # Upsert changed folders.
+        if new_rows:
+            self._db.upsert_scan_rows(new_rows)
+
+        # Delete rows whose folder no longer exists.
+        stale = [p for p in cached_mtimes.keys() if p not in seen_paths]
+        if stale:
+            self._db.delete_scan_paths(stale)
+
+        # Rebuild in-memory sets from the authoritative DB state.
+        rebuilt_albums: set[tuple[str, str]] = set()
+        rebuilt_artists: set[str] = set()
+        for row in self._db.get_scan_rows():
+            if not row["has_audio"]:
+                continue
+            artist = row["artist"]
+            album = row["album"]
+            if artist and album:
+                rebuilt_albums.add((artist, album))
+                rebuilt_artists.add(artist)
+        self.albums = rebuilt_albums
+        self.artists = rebuilt_artists
+
+        # Merge any brand-new entries in case get_scan_rows was empty.
+        self.albums.update(new_albums)
+        self.artists.update(new_artists)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def refresh(self) -> None:
+        """Run the incremental scan synchronously.
+
+        Used by the Resync button so callers can wait for completion.
+        """
+        if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            self._refresh_thread.join()
+        self._run_refresh()
 
     def has_playlist(self, title: str, uuid: str = "") -> bool:
-        """Return True if the playlist is recorded as downloaded.
-
-        Args:
-            title: Playlist title (used as fallback stem match).
-            uuid: Tidal playlist UUID for index-based lookup.
-
-        Returns:
-            True when the playlist is present in the cache.
-        """
+        """Return True if the playlist is recorded as downloaded."""
         if uuid and uuid in self.pl_uuids:
             return True
         return _norm(title) in self.m3u_stems
 
     def has_album(self, artist: str, album: str, album_id: str = "") -> bool:
-        """Return True if the album is recorded as downloaded.
-
-        Args:
-            artist: Artist name (used as fallback folder match).
-            album: Album title (used as fallback folder match).
-            album_id: Tidal album ID for index-based lookup.
-
-        Returns:
-            True when the album is present in the cache.
-        """
+        """Return True if the album is recorded as downloaded."""
         if album_id and str(album_id) in self.album_ids:
             return True
         return (_norm(artist), _norm(album)) in self.albums
 
     def has_artist(self, name: str, artist_id: str = "") -> bool:
-        """Return True if the artist is recorded as downloaded.
-
-        Args:
-            name: Artist name (used as fallback folder match).
-            artist_id: Tidal artist ID for index-based lookup.
-
-        Returns:
-            True when the artist is present in the cache.
-        """
+        """Return True if the artist is recorded as downloaded."""
         if artist_id and str(artist_id) in self.artist_ids:
             return True
         return _norm(name) in self.artists

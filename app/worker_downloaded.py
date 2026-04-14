@@ -1,21 +1,27 @@
 """
 DownloadedWorker — loads previously downloaded items from the local index.
 
-Uses the QObject + moveToThread pattern instead of QThread subclassing.
+Uses the QObject + moveToThread pattern and resolves URLs concurrently
+via a ThreadPoolExecutor. The source-of-truth URL list comes from the
+SQLite-backed :class:`app.models.index_db.IndexDB`.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PySide6.QtCore import QObject, Signal
 
 from tiddl.core.api.api import TidalAPI
 
-from app.worker_index import load_index, _TIDAL_URL_RE
+from app.models.index_db import IndexDB
+from app.worker_index import _TIDAL_URL_RE
 
 log = logging.getLogger(__name__)
 
+_MAX_WORKERS = 8
+
 
 class DownloadedWorker(QObject):
-    """Loads previously downloaded Tidal items by reading URLs from the local index.
+    """Loads previously downloaded Tidal items by resolving recorded URLs.
 
     Signals:
         item_ready: Emitted for each successfully loaded item object.
@@ -32,7 +38,7 @@ class DownloadedWorker(QObject):
 
         Args:
             api: Authenticated TidalAPI instance.
-            download_path: Path to the download directory containing the index.
+            download_path: Path to the download directory.
         """
         super().__init__()
         self.api = api
@@ -43,37 +49,59 @@ class DownloadedWorker(QObject):
         """Request the worker to stop at the next iteration checkpoint."""
         self._interrupted = True
 
+    def _fetch(self, url: str):
+        """Resolve a single URL to a Tidal API model."""
+        m = _TIDAL_URL_RE.search(url)
+        if not m:
+            return None
+        rtype, rid = m.groups()
+        if rtype == "playlist":
+            return self.api.get_playlist(playlist_uuid=rid)
+        if rtype == "album":
+            return self.api.get_album(album_id=int(rid))
+        if rtype == "artist":
+            return self.api.get_artist(artist_id=int(rid))
+        return None
+
     def run(self) -> None:
-        """Load previously downloaded items from the index and emit them.
+        """Resolve recorded URLs concurrently and emit each item.
 
         Called by the owning QThread via ``thread.started`` signal.
         Always emits :attr:`finished` before returning.
         """
         try:
-            index = load_index(self.download_path)
-            urls = index.get("urls", [])
+            try:
+                with IndexDB(self.download_path) as db:
+                    urls = db.list_urls()
+            except Exception as exc:
+                log.warning("Failed to open index DB: %s", exc)
+                urls = []
 
-            for url in urls:
-                if self._interrupted:
-                    break
-                try:
-                    m = _TIDAL_URL_RE.search(url)
-                    if not m:
+            if not urls or self._interrupted:
+                self.finished.emit()
+                return
+
+            pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
+            try:
+                futures = {pool.submit(self._fetch, url): url for url in urls}
+                for fut in as_completed(futures):
+                    if self._interrupted:
+                        break
+                    url = futures[fut]
+                    try:
+                        item = fut.result()
+                    except Exception as exc:
+                        log.warning(
+                            "Failed to load downloaded item %s: %s", url, exc,
+                        )
                         continue
-                    rtype, rid = m.groups()
-
-                    if rtype == "playlist":
-                        item = self.api.get_playlist(playlist_uuid=rid)
-                    elif rtype == "album":
-                        item = self.api.get_album(album_id=int(rid))
-                    elif rtype == "artist":
-                        item = self.api.get_artist(artist_id=int(rid))
-                    else:
-                        continue
-
-                    self.item_ready.emit(item)
-                except Exception as exc:
-                    log.warning("Failed to load downloaded item %s: %s", url, exc)
+                    if item is not None:
+                        self.item_ready.emit(item)
+            finally:
+                pool.shutdown(
+                    wait=not self._interrupted,
+                    cancel_futures=self._interrupted,
+                )
 
             self.finished.emit()
         except Exception as exc:
