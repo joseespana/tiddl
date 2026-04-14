@@ -43,7 +43,7 @@ You have two ways to run tiddl:
 | Mode | Command | Best for |
 | --- | --- | --- |
 | **CLI** (console) | `tiddl …` | Scripts, servers, power users |
-| **GUI** (desktop app) | `python -m app.main` | Browsing your library, bulk selecting downloads |
+| **GUI** (desktop app) | `python3 -m app.main` | Browsing your library, bulk selecting downloads |
 
 Both use the same auth tokens and config (`~/.tiddl/`), so you can switch freely.
 
@@ -53,16 +53,22 @@ The GUI lets you browse your Tidal library (Your Playlists, Liked Playlists, Alb
 
 ### Requirements
 
-PySide6 is an optional dependency — install it only if you want the GUI.
+PySide6 is listed in `pyproject.toml` and gets installed automatically when you install the project.
+
+### Install
+
+Clone the repo and install in editable mode from the repo root:
 
 ```bash
-# from the repo root
-uv pip install -e .        # installs tiddl + PySide6 (listed in pyproject)
-# or
-pip install -e .
+git clone https://github.com/oskvr37/tiddl
+cd tiddl
+python3 -m pip install -e .
 ```
 
 > [!NOTE]
+> On macOS the command is usually `python3` / `python3 -m pip` (the bare `pip` / `python` commands are not on PATH by default). On Linux/Windows either name works.
+
+> [!IMPORTANT]
 > `ffmpeg` is still required for the GUI since it downloads through the same tiddl engine.
 
 ### Run it
@@ -70,7 +76,7 @@ pip install -e .
 From the repo root:
 
 ```bash
-python -m app.main
+python3 -m app.main
 ```
 
 On first launch it opens a "Connect with Tidal" dialog: click the button, approve in your browser, and the app remembers your session.
