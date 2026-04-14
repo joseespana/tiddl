@@ -267,6 +267,20 @@ class IndexDB:
                 ).fetchall()
             )
 
+    def paths_missing_track_count(self) -> set[str]:
+        """Paths where has_audio=1 but track_count=0 (pre-migration rows).
+
+        These need a re-walk so the new ``track_count`` column gets
+        populated. Returned as a set for fast membership testing during
+        the incremental scan.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT path FROM disk_scan_cache "
+                "WHERE has_audio = 1 AND track_count = 0"
+            ).fetchall()
+        return {r[0] for r in rows}
+
     def total_tracks(self) -> int:
         """Sum of ``track_count`` across every scan row with audio."""
         with self._lock:

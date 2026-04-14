@@ -195,6 +195,13 @@ class DiskCache:
             return
 
         cached_mtimes = self._db.get_scan_mtimes()
+        # Rows that were cached before track_count existed and still show 0
+        # even though they have audio. Force a recount on these regardless
+        # of whether the folder mtime changed.
+        try:
+            needs_count = self._db.paths_missing_track_count()
+        except Exception:
+            needs_count = set()
         seen_paths: set[str] = set()
         new_rows: list[
             tuple[str, int, str | None, str | None, bool, int]
@@ -234,7 +241,8 @@ class DiskCache:
 
                 bname = _norm(album_dir.name)
 
-                if cached_mtimes.get(path_str) == mtime_ns:
+                mtime_unchanged = cached_mtimes.get(path_str) == mtime_ns
+                if mtime_unchanged and path_str not in needs_count:
                     # Unchanged — keep whatever the cache said.
                     # (albums set was already seeded in __init__.)
                     if (aname, bname) in self.albums:
