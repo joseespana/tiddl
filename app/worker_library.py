@@ -79,6 +79,14 @@ class LibraryWorker(QObject):
                     for pl in page.items:
                         if self._interrupted:
                             break
+                        # Skip duplicates (Tidal can return the same uuid
+                        # across pages when items are added during fetch).
+                        if pl.uuid in seen_uuids:
+                            continue
+                        # Skip untitled/imported placeholders.
+                        if not (pl.title and pl.title.strip()):
+                            log.debug("Skipping unnamed playlist %s", pl.uuid)
+                            continue
                         seen_uuids.add(pl.uuid)
                         self.item_ready_tagged.emit(pl, "owned")
                     total = page.totalNumberOfItems
@@ -97,6 +105,9 @@ class LibraryWorker(QObject):
                     except Exception as exc:
                         log.warning("Failed to load playlist %s: %s", uuid, exc)
                         continue
+                    if not (pl.title and pl.title.strip()):
+                        continue
+                    seen_uuids.add(pl.uuid)
                     self.item_ready_tagged.emit(pl, "liked")
 
             elif self.tab == "albums":

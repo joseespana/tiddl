@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import (
     Qt, Signal, QUrl, QPropertyAnimation, QEasingCurve,
 )
-from PySide6.QtGui import QFont, QPixmap
+from PySide6.QtGui import QFont, QFontMetrics, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -215,10 +216,18 @@ class CoverLabel(QLabel):
         super().hideEvent(event)
 
 
-# ── Library row widget ────────────────────────────────────────────────────────
+# ── Library card widget ───────────────────────────────────────────────────────
 
-class LibraryItemWidget(QWidget):
-    """A single row in the library list with checkbox, cover, title and badge."""
+CARD_W = 178
+CARD_H = 232
+COVER_SIZE = 178
+CARD_SPACING_H = 14
+CARD_SPACING_V = 18
+GRID_MARGIN = 16
+
+
+class LibraryItemWidget(QFrame):
+    """A square card for a library item (Tidal/Spotify-style)."""
 
     check_changed = Signal()
 
@@ -230,56 +239,120 @@ class LibraryItemWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self.item_data = item_data
-        self._sep: QFrame | None = None
-        self.setFixedHeight(ITEM_HEIGHT)
+        self._sep = None  # presenter checks `if w._sep:` — always falsy now
+        self._source: str = ""
+        self.setFixedSize(CARD_W, CARD_H)
+        self.setObjectName("LibraryItemWidget")
+        self._base_qss = (
+            "LibraryItemWidget{background:#1e1e1e;border:1px solid #252525;"
+            "border-radius:8px;}"
+            "LibraryItemWidget:hover{background:#252525;border-color:#333;}"
+        )
+        self.setStyleSheet(self._base_qss)
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(10, 6, 16, 6)
-        row.setSpacing(12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        self.checkbox = QCheckBox()
-        self.checkbox.setFixedWidth(20)
-        self.checkbox.stateChanged.connect(self.check_changed)
-        row.addWidget(self.checkbox)
+        # ── Cover area (178×178) with absolutely-positioned overlays ──────────
+        self._cover_container = QWidget(self)
+        self._cover_container.setFixedSize(COVER_SIZE, COVER_SIZE)
+        self._cover_container.setStyleSheet(
+            "background:#0a0a0a;"
+            "border-top-left-radius:8px;"
+            "border-top-right-radius:8px;"
+        )
+        outer.addWidget(self._cover_container)
 
         cover_url = self._cover(item_data)
-        row.addWidget(CoverLabel(cover_url, size=52))
+        self._cover_lbl = CoverLabel(cover_url, size=COVER_SIZE, parent=self._cover_container)
+        self._cover_lbl.setStyleSheet(
+            "background:#0a0a0a;"
+            "border-top-left-radius:8px;"
+            "border-top-right-radius:8px;"
+        )
+        self._cover_lbl.move(0, 0)
 
-        text_col = QVBoxLayout()
-        text_col.setSpacing(3)
+        # Dim overlay for downloaded items (hidden by default)
+        self._dim_overlay = QLabel(self._cover_container)
+        self._dim_overlay.setFixedSize(COVER_SIZE, COVER_SIZE)
+        self._dim_overlay.setStyleSheet(
+            "background:rgba(0,0,0,120);"
+            "border-top-left-radius:8px;"
+            "border-top-right-radius:8px;"
+        )
+        self._dim_overlay.move(0, 0)
+        self._dim_overlay.setVisible(False)
 
-        title_row = QHBoxLayout()
-        title_row.setSpacing(8)
+        # Checkbox overlay (top-left)
+        self.checkbox = QCheckBox(self._cover_container)
+        self.checkbox.setFixedSize(22, 22)
+        self.checkbox.setStyleSheet(
+            "QCheckBox{background:rgba(0,0,0,150);border-radius:4px;padding:2px;}"
+            "QCheckBox::indicator{width:14px;height:14px;border-radius:3px;"
+            "border:1px solid #888;background:#1e1e1e;}"
+            "QCheckBox::indicator:checked{background:#0ff;border-color:#0ff;}"
+        )
+        self.checkbox.move(8, 8)
+        self.checkbox.stateChanged.connect(self.check_changed)
+        self.checkbox.raise_()
 
-        self._title_lbl = QLabel(self._title(item_data))
-        self._title_cache = self._title(item_data).lower()
-        self._sub_cache = self._subtitle(item_data).lower()
-        self._title_lbl.setStyleSheet("font-weight: bold; font-size: 13px;")
-        title_row.addWidget(self._title_lbl)
-
-        # Type badge (PLAYLIST / ALBUM / ARTIST)
+        # Type badge (PLAYLIST / ALBUM / ARTIST) — bottom-left
         itype = self._item_type(item_data)
-        self._type_badge = QLabel(_BADGE_LABEL.get(itype, ""))
+        self._type_badge = QLabel(_BADGE_LABEL.get(itype, ""), self._cover_container)
         self._type_badge.setStyleSheet(_BADGE_QSS.get(itype, ""))
         self._type_badge.setVisible(bool(_BADGE_LABEL.get(itype)))
-        title_row.addWidget(self._type_badge)
+        self._type_badge.adjustSize()
+        self._type_badge.move(8, 148)
+        self._type_badge.raise_()
 
-        self._badge = QLabel("✓ Downloaded")
+        # Downloaded badge — bottom-right
+        self._badge = QLabel("✓ Downloaded", self._cover_container)
         self._badge.setStyleSheet(
-            "background: rgba(0,200,100,40); color: #0c6; "
-            "border: 1px solid rgba(0,200,100,100); border-radius: 3px; "
-            "font-size: 10px; padding: 1px 6px;"
+            "background: rgba(0,200,100,180); color: #fff; "
+            "border: 1px solid rgba(0,200,100,220); border-radius: 3px; "
+            "font-size: 10px; font-weight:bold; padding: 1px 6px;"
         )
         self._badge.setVisible(False)
-        title_row.addWidget(self._badge)
-        title_row.addStretch()
-        text_col.addLayout(title_row)
+        self._badge.adjustSize()
+        self._badge.move(COVER_SIZE - self._badge.width() - 8, 148)
+        self._badge.raise_()
 
-        self._sub_lbl = QLabel(self._subtitle(item_data))
-        self._sub_lbl.setStyleSheet("color: #888; font-size: 11px;")
-        text_col.addWidget(self._sub_lbl)
+        # ── Text block ────────────────────────────────────────────────────────
+        text_wrap = QWidget(self)
+        text_wrap.setStyleSheet("background:transparent;")
+        text_lay = QVBoxLayout(text_wrap)
+        text_lay.setContentsMargins(6, 8, 6, 8)
+        text_lay.setSpacing(2)
 
-        row.addLayout(text_col, 1)
+        title_text = self._title(item_data)
+        sub_text = self._subtitle(item_data)
+        self._title_cache = title_text.lower()
+        self._sub_cache = sub_text.lower()
+
+        self._title_lbl = QLabel(text_wrap)
+        self._title_lbl.setStyleSheet(
+            "color:#eee; font-weight:bold; font-size:13px; background:transparent;"
+        )
+        self._title_lbl.setWordWrap(False)
+        self._title_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self._title_lbl.setMaximumWidth(166)
+        self._title_lbl.setText(self._elide(title_text, self._title_lbl.font(), 166))
+        self._title_lbl.setToolTip(title_text)
+        text_lay.addWidget(self._title_lbl)
+
+        self._sub_lbl = QLabel(text_wrap)
+        self._sub_lbl.setStyleSheet(
+            "color:#888; font-size:11px; background:transparent;"
+        )
+        self._sub_lbl.setWordWrap(False)
+        self._sub_lbl.setMaximumWidth(166)
+        self._sub_lbl.setText(self._elide(sub_text, self._sub_lbl.font(), 166))
+        self._sub_lbl.setToolTip(sub_text)
+        text_lay.addWidget(self._sub_lbl)
+        text_lay.addStretch()
+
+        outer.addWidget(text_wrap, 1)
 
         self.refresh_downloaded(cache)
 
@@ -297,10 +370,15 @@ class LibraryItemWidget(QWidget):
         """Trigger the entry fade-in animation."""
         self._fade_anim.start()
 
+    @staticmethod
+    def _elide(text: str, font, max_w: int) -> str:
+        fm = QFontMetrics(font)
+        return fm.elidedText(text, Qt.TextElideMode.ElideRight, max_w)
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def is_checked(self) -> bool:
-        """Return True when the row checkbox is checked."""
+        """Return True when the card checkbox is checked."""
         return self.checkbox.isChecked()
 
     def get_url(self) -> str:
@@ -313,8 +391,29 @@ class LibraryItemWidget(QWidget):
         return ""
 
     def refresh_downloaded(self, cache) -> None:
-        """Update the downloaded badge visibility based on *cache*."""
-        self._badge.setVisible(self._check_downloaded(cache))
+        """Update downloaded badge + dim overlay + checkbox enabled state."""
+        is_dl = self._check_downloaded(cache)
+        self._badge.setVisible(is_dl)
+        if is_dl:
+            # Re-position badge in case width changed after first show
+            self._badge.adjustSize()
+            self._badge.move(COVER_SIZE - self._badge.width() - 8, 148)
+            self.checkbox.setEnabled(False)
+            self.checkbox.setChecked(False)
+            self._dim_overlay.setVisible(True)
+            self._dim_overlay.raise_()
+            # Re-raise overlays so they remain above the dim layer
+            self.checkbox.raise_()
+            self._type_badge.raise_()
+            self._badge.raise_()
+            self.setStyleSheet(
+                self._base_qss
+                + "LibraryItemWidget{opacity:0.7;}"
+            )
+        else:
+            self.checkbox.setEnabled(True)
+            self._dim_overlay.setVisible(False)
+            self.setStyleSheet(self._base_qss)
 
     def _check_downloaded(self, cache) -> bool:
         if cache is None:
@@ -374,6 +473,16 @@ class LibraryItemWidget(QWidget):
 
     @staticmethod
     def _subtitle(d) -> str:
+        # Playlists: prefer creator name + track count
+        if hasattr(d, "uuid"):
+            n = getattr(d, "numberOfTracks", None)
+            creator = getattr(d, "creator", None)
+            cname = getattr(creator, "name", None) if creator else None
+            if cname and n:
+                return f"{cname} · {n} tracks"
+            if n:
+                return f"Playlist · {n} tracks"
+            return "Playlist"
         if hasattr(d, "numberOfTracks"):
             artist = (d.artist.name + " · ") if getattr(d, "artist", None) else ""
             return f"{artist}{d.numberOfTracks} tracks"
@@ -381,6 +490,25 @@ class LibraryItemWidget(QWidget):
             pop = getattr(d, "popularity", None)
             return f"Popularity: {pop}" if pop else "Artist"
         return ""
+
+
+# ── Grid container that forwards resize events ────────────────────────────────
+
+class _GridContainer(QWidget):
+    """QWidget that calls back into the main view on resize so the
+    grid column count can adapt to the available width.
+    """
+
+    def __init__(self, view: "MainView") -> None:
+        super().__init__()
+        self._view = view
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        try:
+            self._view._on_grid_resize()
+        except Exception:
+            pass
 
 
 # ── Main view ─────────────────────────────────────────────────────────────────
@@ -530,20 +658,28 @@ class MainView(QMainWindow):
         # ── Tidal search panel (visible only on Search tab) ───────────────────
         lay.addWidget(self._make_search_panel())
 
-        # ── List ─────────────────────────────────────────────────────────────
-        self._list_container = QWidget()
+        # ── Grid of cards ────────────────────────────────────────────────────
+        self._grid_columns = 4
+        self._list_container = _GridContainer(self)
         self._list_container.setStyleSheet("background:#1a1a1a;")
-        self._list_layout = QVBoxLayout(self._list_container)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(0)
+        self._list_layout = QGridLayout(self._list_container)
+        self._list_layout.setContentsMargins(
+            GRID_MARGIN, GRID_MARGIN, GRID_MARGIN, GRID_MARGIN
+        )
+        self._list_layout.setHorizontalSpacing(CARD_SPACING_H)
+        self._list_layout.setVerticalSpacing(CARD_SPACING_V)
+        self._list_layout.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
 
         self._loading_label = QLabel("Loading…")
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._loading_label.setStyleSheet(
             "color:#555; font-size:14px; padding:50px;"
         )
-        self._list_layout.addWidget(self._loading_label)
-        self._list_layout.addStretch()
+        self._list_layout.addWidget(
+            self._loading_label, 0, 0, 1, self._grid_columns
+        )
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -856,21 +992,31 @@ class MainView(QMainWindow):
         self._tab_title.setText(title)
 
     def clear_list(self) -> None:
-        """Remove all item widgets from the list and show the loading label."""
+        """Remove all item widgets from the grid and show the loading label."""
         self.item_widgets.clear()
-        while self._list_layout.count():
-            child = self._list_layout.takeAt(0)
-            w = child.widget()
-            if w and w is not self._loading_label:
+        # Take everything; delete card widgets, keep the loading label.
+        i = self._list_layout.count() - 1
+        while i >= 0:
+            item = self._list_layout.itemAt(i)
+            w = item.widget() if item else None
+            if w is None:
+                self._list_layout.takeAt(i)
+            elif w is not self._loading_label:
+                self._list_layout.takeAt(i)
+                w.setParent(None)
                 w.deleteLater()
+            else:
+                self._list_layout.takeAt(i)
+            i -= 1
         self._loading_label.setText("Loading…")
         self._loading_label.setVisible(True)
-        self._list_layout.addWidget(self._loading_label)
-        self._list_layout.addStretch()
+        self._list_layout.addWidget(
+            self._loading_label, 0, 0, 1, self._grid_columns
+        )
         self.update_select_btn()
 
     def add_item(self, item_data, cache, source: str = "") -> None:
-        """Append a library item row to the list.
+        """Append a library item card to the grid.
 
         Args:
             item_data: Tidal API model object (Playlist, Album, Artist …).
@@ -881,22 +1027,17 @@ class MainView(QMainWindow):
         # Hide loading label on first item
         idx = self._list_layout.indexOf(self._loading_label)
         if idx >= 0:
-            self._list_layout.takeAt(idx)
+            self._list_layout.removeWidget(self._loading_label)
             self._loading_label.setVisible(False)
 
         widget = LibraryItemWidget(item_data, cache)
         widget._source = source
+        widget._sep = None  # presenter checks `if w._sep:` — always falsy now
         widget.check_changed.connect(self.update_select_btn)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background:#252525; max-height:1px;")
-        widget._sep = sep
-
-        # Insert before the trailing stretch
-        pos = max(self._list_layout.count() - 1, 0)
-        self._list_layout.insertWidget(pos, widget)
-        self._list_layout.insertWidget(pos + 1, sep)
+        n = len(self.item_widgets)
+        row, col = divmod(n, self._grid_columns)
+        self._list_layout.addWidget(widget, row, col)
         self.item_widgets.append(widget)
         widget.play_fade_in()
 
@@ -909,7 +1050,6 @@ class MainView(QMainWindow):
         visible = subtab_ok and search_ok
         if not visible:
             widget.setVisible(False)
-            sep.setVisible(False)
 
     def set_loading_text(self, msg: str) -> None:
         """Set text on the loading/empty-state label and make it visible.
@@ -919,8 +1059,45 @@ class MainView(QMainWindow):
         self._loading_label.setText(msg)
         idx = self._list_layout.indexOf(self._loading_label)
         if idx < 0:
-            self._list_layout.insertWidget(0, self._loading_label)
+            self._list_layout.addWidget(
+                self._loading_label, 0, 0, 1, self._grid_columns
+            )
         self._loading_label.setVisible(True)
+
+    # ── Responsive grid ──────────────────────────────────────────────────────
+
+    def _on_grid_resize(self) -> None:
+        """Recompute grid column count on container resize."""
+        avail = self._list_container.width() - (GRID_MARGIN * 2)
+        col_w = CARD_W + CARD_SPACING_H
+        new_cols = max(1, avail // col_w)
+        if new_cols != self._grid_columns:
+            self._grid_columns = int(new_cols)
+            self._relayout_grid()
+
+    def _relayout_grid(self) -> None:
+        """Re-place every card widget at its new (row, col) after a column
+        count change. Also re-spans the loading label.
+        """
+        # Detach every card from the layout
+        for w in self.item_widgets:
+            self._list_layout.removeWidget(w)
+        loading_visible = self._loading_label.isVisible()
+        if self._list_layout.indexOf(self._loading_label) >= 0:
+            self._list_layout.removeWidget(self._loading_label)
+
+        # Re-add cards at new grid positions
+        for i, w in enumerate(self.item_widgets):
+            row, col = divmod(i, self._grid_columns)
+            self._list_layout.addWidget(w, row, col)
+
+        # Re-add loading label spanning the full row if it was visible
+        if loading_visible:
+            row = (len(self.item_widgets) + self._grid_columns - 1) // self._grid_columns
+            self._list_layout.addWidget(
+                self._loading_label, row, 0, 1, self._grid_columns
+            )
+            self._loading_label.setVisible(True)
 
     def show_search_panel(self, visible: bool) -> None:
         """Show or hide the Tidal search input panel."""
