@@ -9,7 +9,9 @@ import html as _html
 import re
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import (
+    Qt, Signal, QUrl, QPropertyAnimation, QEasingCurve,
+)
 from PySide6.QtGui import QFont, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtWidgets import (
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -279,6 +282,20 @@ class LibraryItemWidget(QWidget):
         row.addLayout(text_col, 1)
 
         self.refresh_downloaded(cache)
+
+        # Fade-in animation: 0→100% opacity over 240ms with a soft ease-out.
+        self._opacity_fx = QGraphicsOpacityEffect(self)
+        self._opacity_fx.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_fx)
+        self._fade_anim = QPropertyAnimation(self._opacity_fx, b"opacity", self)
+        self._fade_anim.setDuration(240)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def play_fade_in(self) -> None:
+        """Trigger the entry fade-in animation."""
+        self._fade_anim.start()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -809,6 +826,7 @@ class MainView(QMainWindow):
         self._list_layout.insertWidget(pos, widget)
         self._list_layout.insertWidget(pos + 1, sep)
         self.item_widgets.append(widget)
+        widget.play_fade_in()
 
         # Apply any active search filter immediately
         q = self._search_box.text().strip().lower()

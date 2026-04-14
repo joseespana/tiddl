@@ -292,6 +292,17 @@ class MainPresenter(QObject):
             self._view.set_loading_text(msg)
 
     def _on_library_error(self, msg: str) -> None:
+        # Detect auth/401-related errors and trigger the re-login flow
+        # automatically — refresh tokens themselves expire and the API
+        # surfaces this as AuthClientError / 401 / "Unauthorized".
+        low = msg.lower()
+        if any(s in low for s in (
+            "401", "unauthorized", "authclient", "invalid_grant",
+            "token", "refresh",
+        )):
+            self._view.set_loading_text("⚠ Session expired — please sign in again.")
+            self._logout()
+            return
         self._view.set_loading_text(f"⚠ {msg}")
 
     # ── Filter & selection ────────────────────────────────────────────────────
