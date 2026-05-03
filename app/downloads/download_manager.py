@@ -240,8 +240,24 @@ class DownloadManager(QObject):
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _start_runnable(self, task: DownloadTask) -> None:
-        """Build a runnable for *task*, park it pending, then pump the queue."""
-        runnable = _DownloadRunnable(task)
+        """Build a runnable for *task*, park it pending, then pump the queue.
+
+        Routes by URL host: SoundCloud links go through the yt-dlp-backed
+        :class:`_SoundCloudRunnable`; everything else stays on the
+        existing tiddl-CLI pipeline.
+        """
+        # Local import — keeps download_manager importable in test contexts
+        # that don't have the full Qt download stack wired up, and avoids
+        # a circular import (_SoundCloudRunnable imports DownloadTask).
+        from app.downloads.soundcloud_runnable import (
+            is_soundcloud_url,
+            _SoundCloudRunnable,
+        )
+
+        if is_soundcloud_url(task.url):
+            runnable: QRunnable = _SoundCloudRunnable(task)
+        else:
+            runnable = _DownloadRunnable(task)
         runnable.signals.log_line.connect(self._on_log_line)
         runnable.signals.finished.connect(self._on_finished)
         runnable.signals.failed.connect(self._on_failed)

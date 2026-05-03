@@ -123,6 +123,16 @@ class MainPresenter(QObject):
         vm = to_card_vm(item, self._disk_cache, source=source)
         self._view.add_item(vm)
 
+    def _on_card_ready(self, vm: object) -> None:
+        """Deliver a pre-built CardVM (used for SoundCloud playlists).
+
+        Tidal items still go through ``to_card_vm``; SC items arrive as
+        ready-to-render :class:`CardVM` instances since they have no
+        upstream API model to map from.
+        """
+        if isinstance(vm, CardVM):
+            self._view.add_item(vm)
+
     def _on_dl_log_line(self, _task_id: str, line: str) -> None:
         """Parse download log lines and update the status card."""
         # Failure lines surfaced by DownloadManager._on_failed
@@ -228,6 +238,7 @@ class MainPresenter(QObject):
             worker = DownloadedWorker(self._api, self._view.get_download_path())
             thread = QThread()
             worker.item_ready.connect(self._on_item_ready)
+            worker.card_ready.connect(self._on_card_ready)
             worker.finished.connect(self._on_library_loaded)
             worker.error.connect(self._on_library_error)
             self._downloaded_worker = worker

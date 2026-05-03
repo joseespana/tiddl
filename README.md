@@ -16,6 +16,9 @@ Download tracks and videos from Tidal with max quality! `tiddl` ships with **two
 > [!IMPORTANT]
 > You also need [`ffmpeg`](https://ffmpeg.org/download.html) on your PATH — it converts downloaded tracks to their final format. On macOS: `brew install ffmpeg`. On Windows: download from ffmpeg.org and add the `bin/` folder to PATH, or `winget install ffmpeg`. On Linux: `sudo apt install ffmpeg` / equivalent.
 
+> [!NOTE]
+> **Optional — SoundCloud support.** Paste a SoundCloud playlist or track URL into the GUI's *Direct URL* field and tiddl will route it through [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) instead of Tidal. Install it once: `brew install yt-dlp` (macOS), `pip install yt-dlp` (any OS), or `winget install yt-dlp`. Files land alongside your Tidal downloads as `<uploader>/<playlist>/NN. <title>.mp3`, with a matching `m3u/<playlist>.m3u` so the playlist shows up in the **Downloaded** tab the same way Tidal playlists do.
+
 ## Using pip (any OS)
 
 **macOS / Linux**

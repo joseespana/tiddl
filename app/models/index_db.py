@@ -26,9 +26,12 @@ _TIDAL_URL_RE = re.compile(r'(playlist|album|artist|track)/([a-zA-Z0-9\-]+)')
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS downloaded_items (
-    kind TEXT NOT NULL,
-    id   TEXT NOT NULL,
-    url  TEXT,
+    kind     TEXT NOT NULL,
+    id       TEXT NOT NULL,
+    url      TEXT,
+    provider TEXT NOT NULL DEFAULT 'tidal',
+    title    TEXT,
+    creator  TEXT,
     recorded_at INTEGER NOT NULL,
     PRIMARY KEY (kind, id)
 );
@@ -102,6 +105,37 @@ class IndexDB:
                     "ALTER TABLE disk_scan_cache "
                     "ADD COLUMN track_count INTEGER NOT NULL DEFAULT 0"
                 )
+            # Additive migration: older DBs lack the provider column on
+            # downloaded_items. Existing rows are all Tidal — backfill.
+            di_cols = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(downloaded_items)"
+                )
+            }
+            if "provider" not in di_cols:
+                self._conn.execute(
+                    "ALTER TABLE downloaded_items "
+                    "ADD COLUMN provider TEXT NOT NULL DEFAULT 'tidal'"
+                )
+            # SoundCloud entries carry their display name + uploader
+            # inline so the Downloaded tab can render a card without
+            # any extra disk walk or API call.
+            if "title" not in di_cols:
+                self._conn.execute(
+                    "ALTER TABLE downloaded_items ADD COLUMN title TEXT"
+                )
+            if "creator" not in di_cols:
+                self._conn.execute(
+                    "ALTER TABLE downloaded_items ADD COLUMN creator TEXT"
+                )
+            # Provider index is created here, AFTER any ALTER TABLE that
+            # adds the column on legacy DBs — otherwise the parser fails
+            # with "no such column" before the migration runs.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_downloaded_provider "
+                "ON downloaded_items(provider)"
+            )
 
         self._maybe_migrate_legacy_json()
 
@@ -161,10 +195,15 @@ class IndexDB:
 
             try:
                 self._conn.execute("BEGIN")
+                # Legacy JSON only ever held Tidal entries.
+                rows_with_provider = [
+                    (k, i, u, "tidal", ts) for (k, i, u, ts) in rows
+                ]
                 self._conn.executemany(
                     "INSERT OR IGNORE INTO downloaded_items "
-                    "(kind, id, url, recorded_at) VALUES (?, ?, ?, ?)",
-                    rows,
+                    "(kind, id, url, provider, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    rows_with_provider,
                 )
                 self._conn.execute(
                     "INSERT OR REPLACE INTO scan_meta(key, value) VALUES "
@@ -186,18 +225,30 @@ class IndexDB:
     # Downloaded items API
     # ------------------------------------------------------------------
     def add_downloaded(
-        self, kind: str, id: str, url: Optional[str] = None,
+        self,
+        kind: str,
+        id: str,
+        url: Optional[str] = None,
+        provider: str = "tidal",
+        title: Optional[str] = None,
+        creator: Optional[str] = None,
     ) -> None:
         """Record that *(kind, id)* has been downloaded.
 
-        O(1) single ``INSERT OR IGNORE``.
+        O(1) single ``INSERT OR IGNORE`` followed by an ``UPDATE`` that
+        backfills any optional fields the caller supplied.
 
         Args:
             kind: One of ``"playlist"``, ``"album"``, ``"artist"``,
                 ``"track"``.
-            id: The Tidal resource id (UUID for playlists, numeric id
-                otherwise).
-            url: Optional full Tidal URL for reconstruction later.
+            id: The resource id (Tidal UUID/numeric id, or a SoundCloud
+                identifier — typically the source URL itself for SC).
+            url: Optional full source URL for reconstruction later.
+            provider: ``"tidal"`` (default) or ``"soundcloud"`` — lets
+                the Downloaded tab dispatch by source.
+            title: Display title (SoundCloud only — Tidal entries
+                resolve via API).
+            creator: Display creator/uploader (SoundCloud only).
         """
         if not kind or not id:
             return
@@ -206,15 +257,28 @@ class IndexDB:
             try:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO downloaded_items "
-                    "(kind, id, url, recorded_at) VALUES (?, ?, ?, ?)",
-                    (kind, str(id), url, now),
+                    "(kind, id, url, provider, title, creator, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (kind, str(id), url, provider, title, creator, now),
                 )
-                # Backfill url if the row existed without one.
+                # Backfill optional fields if the row already existed.
                 if url:
                     self._conn.execute(
                         "UPDATE downloaded_items SET url = ? "
                         "WHERE kind = ? AND id = ? AND (url IS NULL OR url = '')",
                         (url, kind, str(id)),
+                    )
+                if title:
+                    self._conn.execute(
+                        "UPDATE downloaded_items SET title = ? "
+                        "WHERE kind = ? AND id = ? AND (title IS NULL OR title = '')",
+                        (title, kind, str(id)),
+                    )
+                if creator:
+                    self._conn.execute(
+                        "UPDATE downloaded_items SET creator = ? "
+                        "WHERE kind = ? AND id = ? AND (creator IS NULL OR creator = '')",
+                        (creator, kind, str(id)),
                     )
             except sqlite3.DatabaseError as exc:
                 log.warning(
@@ -244,6 +308,47 @@ class IndexDB:
                 "ORDER BY recorded_at ASC, kind ASC, id ASC"
             ).fetchall()
         return [r[0] for r in rows]
+
+    def list_entries(
+        self, provider: Optional[str] = None,
+    ) -> list[dict]:
+        """Return one dict per recorded download row.
+
+        Each dict has keys ``kind``, ``id``, ``url``, ``provider``,
+        ``title``, ``creator``. Title/creator are ``""`` for older
+        Tidal entries that pre-date these columns.
+
+        Args:
+            provider: Restrict to a single provider (``"tidal"`` /
+                ``"soundcloud"``) or ``None`` for everything.
+        """
+        with self._lock:
+            if provider is None:
+                rows = self._conn.execute(
+                    "SELECT kind, id, COALESCE(url, ''), provider, "
+                    "COALESCE(title, ''), COALESCE(creator, '') "
+                    "FROM downloaded_items "
+                    "ORDER BY recorded_at ASC, kind ASC, id ASC"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT kind, id, COALESCE(url, ''), provider, "
+                    "COALESCE(title, ''), COALESCE(creator, '') "
+                    "FROM downloaded_items WHERE provider = ? "
+                    "ORDER BY recorded_at ASC, kind ASC, id ASC",
+                    (provider,),
+                ).fetchall()
+        return [
+            {
+                "kind": r[0],
+                "id": r[1],
+                "url": r[2],
+                "provider": r[3],
+                "title": r[4],
+                "creator": r[5],
+            }
+            for r in rows
+        ]
 
     def get_ids(self, kind: str) -> set[str]:
         """Return the set of recorded ids for *kind*."""

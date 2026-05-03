@@ -1026,7 +1026,8 @@ class MainView(QMainWindow):
 
         self._url_edit = QLineEdit()
         self._url_edit.setPlaceholderText(
-            "Paste a Tidal URL (playlist/album/artist)…"
+            "Paste a Tidal URL (playlist/album/artist) or a SoundCloud "
+            "playlist/track URL…"
         )
         self._url_edit.setStyleSheet(_input_style())
         self._url_edit.returnPressed.connect(self._emit_download_url)

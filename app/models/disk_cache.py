@@ -138,29 +138,29 @@ class DiskCache:
         except Exception as exc:
             log.warning("live scan failed: %s", exc)
 
-    @staticmethod
-    def _dir_has_audio(album_dir: Path) -> bool:
-        """Return True when *album_dir* contains at least one .flac/.m4a."""
+    # Audio extensions we treat as a "track" on disk. ``.flac`` / ``.m4a``
+    # come from Tidal; ``.mp3`` is the default for SoundCloud via yt-dlp.
+    _AUDIO_EXTS = (".flac", ".m4a", ".mp3")
+
+    @classmethod
+    def _dir_has_audio(cls, album_dir: Path) -> bool:
+        """Return True when *album_dir* contains at least one audio file."""
         try:
             for entry in album_dir.iterdir():
-                if entry.is_file():
-                    suffix = entry.suffix.lower()
-                    if suffix == ".flac" or suffix == ".m4a":
-                        return True
+                if entry.is_file() and entry.suffix.lower() in cls._AUDIO_EXTS:
+                    return True
         except Exception:
             return False
         return False
 
-    @staticmethod
-    def _count_audio(album_dir: Path) -> int:
-        """Count .flac/.m4a files directly under *album_dir* (non-recursive)."""
+    @classmethod
+    def _count_audio(cls, album_dir: Path) -> int:
+        """Count audio files directly under *album_dir* (non-recursive)."""
         n = 0
         try:
             for entry in album_dir.iterdir():
-                if entry.is_file():
-                    suffix = entry.suffix.lower()
-                    if suffix == ".flac" or suffix == ".m4a":
-                        n += 1
+                if entry.is_file() and entry.suffix.lower() in cls._AUDIO_EXTS:
+                    n += 1
         except Exception:
             return 0
         return n
