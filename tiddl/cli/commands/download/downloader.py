@@ -7,8 +7,9 @@ from tempfile import NamedTemporaryFile
 import aiofiles
 import aiohttp
 
-from tiddl.cli.config import VIDEOS_FILTER_LITERAL
+from tiddl.cli.config import VIDEOS_FILTER_LITERAL, ATMOS_FILTER_LITERAL
 from tiddl.cli.utils.download import get_existing_track_filename
+from tiddl.cli.utils.path import resolve_existing_path_case
 from tiddl.core.api import ApiError, TidalAPI
 from tiddl.core.api.models import StreamVideoQuality, Track, TrackQuality, Video
 from tiddl.core.utils import parse_track_stream, parse_video_stream
@@ -50,6 +51,8 @@ class Downloader:
     skip_existing: bool
     download_path: Path
     scan_path: Path
+    match_existing_path_case: bool
+    dolby_atmos_filter: ATMOS_FILTER_LITERAL
 
     def __init__(
         self,
@@ -62,6 +65,8 @@ class Downloader:
         skip_existing: bool,
         download_path: Path,
         scan_path: Path,
+        match_existing_path_case: bool = False,
+        dolby_atmos_filter: ATMOS_FILTER_LITERAL = "none",
     ) -> None:
         self.api = tidal_api
         self.rich_output = rich_output
@@ -72,6 +77,14 @@ class Downloader:
         self.skip_existing = skip_existing
         self.download_path = download_path
         self.scan_path = scan_path
+        self.match_existing_path_case = match_existing_path_case
+        self.dolby_atmos_filter = dolby_atmos_filter
+
+    def get_path(self, base_path: Path, relative_path: Path) -> Path:
+        if self.match_existing_path_case:
+            return resolve_existing_path_case(base_path, relative_path)
+
+        return base_path / relative_path
 
     async def download(
         self, item: Track | Video, file_path: Path
@@ -92,15 +105,15 @@ class Downloader:
             filename = get_existing_track_filename(
                 item.audioQuality, self.track_quality, file_path
             )
+            existing_file_path = self.get_path(self.scan_path, filename)
             vibrant_color = item.album.vibrantColor
 
         elif isinstance(item, Video):
             filename = file_path.with_suffix(".mp4")
+            existing_file_path = self.get_path(self.scan_path, filename)
             vibrant_color = item.vibrantColor
 
         vibrant_color = vibrant_color or "gray"
-
-        existing_file_path = self.scan_path / filename
 
         log.debug(f"{file_path=}, {filename=}, {existing_file_path=}")
 
@@ -134,6 +147,23 @@ class Downloader:
                     stream = self.api.get_track_stream(
                         track_id=item.id, quality=self.track_quality
                     )
+
+                    log.debug(
+                        f"{stream.trackId=}, {stream.audioQuality=}, {stream.audioMode=}"
+                    )
+
+                    if (
+                        self.dolby_atmos_filter == "none"
+                        and stream.audioMode == "DOLBY_ATMOS"
+                    ) or (
+                        self.dolby_atmos_filter == "only"
+                        and stream.audioMode == "STEREO"
+                    ):
+                        self.rich_output.console.print(
+                            f"[blue]Skipping[/] [gray]{item.title}[/] [blue]due to Dolby Atmos filter[/] {self.dolby_atmos_filter}"
+                        )
+                        return None, False
+
                 except ApiError as e:
                     log.error(f"{item.id=} {e=}")
                     self.rich_output.console.print(
@@ -142,15 +172,21 @@ class Downloader:
                     return None, False
 
                 urls, _ = parse_track_stream(stream)
-                download_path = self.download_path / filename
+                download_path = self.get_path(self.download_path, filename)
 
-                quality = track_qualities_color[stream.audioQuality]
+                quality_string = track_qualities_color[stream.audioQuality]
 
-                if stream.audioQuality in ["HI_RES_LOSSLESS", "LOSSLESS"]:
-                    quality = f"{quality} {stream.bitDepth}-bit, {(stream.sampleRate or 0) / 1000:.1f} kHz"
-
-                if stream.audioQuality == "HI_RES_LOSSLESS":
+                if (
+                    stream.audioQuality in ["HI_RES_LOSSLESS", "LOSSLESS"]
+                    and stream.audioMode == "STEREO"
+                ):
+                    quality_string = f"{quality_string} {stream.bitDepth}-bit, {(stream.sampleRate or 0) / 1000:.1f} kHz"
                     should_extract_flac = True
+                else:
+                    download_path = download_path.with_suffix(".m4a")
+
+                    if stream.audioMode == "DOLBY_ATMOS":
+                        quality_string = "[blue]Dolby Atmos[/]"
 
             elif isinstance(item, Video):
                 stream = self.api.get_video_stream(
@@ -158,11 +194,13 @@ class Downloader:
                 )
 
                 urls, ext = parse_video_stream(stream), ".ts"
-                download_path = (self.download_path / filename).with_suffix(ext)
-                quality = video_qualities_color[stream.videoQuality]
+                download_path = self.get_path(self.download_path, filename).with_suffix(
+                    ext
+                )
+                quality_string = video_qualities_color[stream.videoQuality]
 
             task_id = self.rich_output.download_start(
-                f"[{vibrant_color}]{item.title} {quality}"
+                f"[{vibrant_color}]{item.title} {quality_string}"
             )
 
             download_path.parent.mkdir(exist_ok=True, parents=True)
@@ -186,6 +224,11 @@ class Downloader:
                                     )
 
             shutil.move(tmp.name, download_path)
+
+            try:
+                download_path.chmod(0o644)
+            except OSError:
+                pass
 
             try:
                 if isinstance(item, Track) and should_extract_flac:

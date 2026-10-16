@@ -124,7 +124,7 @@ class Album(BaseModel):
     numberOfTracks: int
     numberOfVideos: int
     numberOfVolumes: int
-    releaseDate: datetime
+    releaseDate: datetime | None = None
     copyright: Optional[str] = None
     type: Literal["ALBUM", "SINGLE", "EP"]
     version: Optional[str] = None
@@ -133,7 +133,7 @@ class Album(BaseModel):
     vibrantColor: Optional[str] = None
     videoCover: Optional[str] = None
     explicit: bool
-    upc: str
+    upc: Optional[str] = None
     popularity: int
     audioQuality: str
     audioModes: List[str]
@@ -162,7 +162,7 @@ class Playlist(BaseModel):
     url: str
     image: Optional[str] = None
     popularity: int
-    squareImage: str
+    squareImage: Optional[str] = None
     promotedArtists: List[Album.Artist]
     lastItemAddedAt: Optional[str] = None
 

@@ -80,6 +80,24 @@ update_mtime = false
 # could be useful when data on Tidal has changed.
 rewrite_metadata = false
 
+# if this option is set to true, an .lrc file will be created alongside the 
+# track file with the same name
+write_lrc_file = false
+
+# when enabled, existing path components are reused even if Tidal returns
+# different casing. This avoids creating separate paths on case-sensitive
+# filesystems that would conflict later when moved to case-insensitive systems.
+# For example, if "FooBar" already exists and the API returns "foobar",
+# downloads will continue under "FooBar".
+match_existing_path_case = false
+
+# Dolby Atmos filter
+# none - download only STEREO tracks
+# only - download only DOLBY_ATMOS tracks
+# allow - download both
+# (both versions won't be downloaded at a time, it depends on what Tidal returns)
+atmos_filter = "none"
+
 
 [metadata]
 # embed metadata in files
@@ -126,7 +144,7 @@ allowed = [
 # album = "albums/{album.artist} - {album.title}"
 
 # you can access: {playlist}
-# playlist = "playlists/{title}"
+# playlist = "playlists/{playlist.title}"
 
 
 [m3u]

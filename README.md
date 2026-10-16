@@ -44,6 +44,12 @@ python -m pip install tiddl
 uv tool install tiddl
 ```
 
+To install exact version e.g. 3.4.1
+
+```bash
+uv tool install tiddl==3.4.1
+```
+
 ## Docker
 
 **coming soon**
@@ -172,18 +178,6 @@ $ tiddl download url <url>
 > You don't have to paste full urls, track/103805726, album/103805723 etc. will also work
 
 Run `tiddl download` to see available download options.
-
-### Error Handling
-
-By default, tiddl stops when encountering unavailable items in collections such as playlists, albums, artists, or mixes (e.g., removed or region-locked tracks).
-
-Use `--skip-errors` to automatically skip these items and continue downloading:
-
-```bash
-tiddl download url <url> --skip-errors
-```
-
-Skipped items are logged with track/album name and IDs for reference.
 
 ### Quality
 
