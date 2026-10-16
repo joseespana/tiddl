@@ -8,6 +8,24 @@ from datetime import datetime
 from mutagen.flac import FLAC as MutagenFLAC, Picture
 from mutagen.easymp4 import EasyMP4 as MutagenEasyMP4
 from mutagen.mp4 import MP4 as MutagenMP4, MP4Cover
+from mutagen.id3 import (
+    ID3,
+    APIC,
+    COMM,
+    TALB,
+    TBPM,
+    TCON,
+    TCOP,
+    TDRC,
+    TIT2,
+    TPE1,
+    TPE2,
+    TPOS,
+    TRCK,
+    TSRC,
+    TXXX,
+    USLT,
+)
 
 from tiddl.core.api.models import AlbumItemsCredits, Track
 
@@ -117,6 +135,53 @@ def add_m4a_metadata(track_path: Path, metadata: Metadata) -> None:
     mutagen.save()
 
 
+def add_mp3_metadata(track_path: Path, metadata: Metadata) -> None:
+    tags = ID3()
+
+    tags.add(TIT2(encoding=3, text=metadata.title))
+    tags.add(TPE1(encoding=3, text=metadata.artists))
+    tags.add(TPE2(encoding=3, text=metadata.album_artist))
+    tags.add(TALB(encoding=3, text=metadata.album_title))
+    tags.add(TRCK(encoding=3, text=metadata.track_number))
+    tags.add(TPOS(encoding=3, text=metadata.disc_number))
+    tags.add(TSRC(encoding=3, text=metadata.isrc))
+
+    if metadata.date:
+        tags.add(TDRC(encoding=3, text=metadata.date[:10]))
+    if metadata.copyright:
+        tags.add(TCOP(encoding=3, text=metadata.copyright))
+    if metadata.genre:
+        tags.add(TCON(encoding=3, text=metadata.genre))
+    if metadata.comment:
+        tags.add(COMM(encoding=3, lang="eng", desc="", text=metadata.comment))
+    if metadata.bpm:
+        tags.add(TBPM(encoding=3, text=metadata.bpm))
+    if metadata.lyrics:
+        tags.add(USLT(encoding=3, lang="eng", desc="", text=metadata.lyrics))
+    if metadata.cover_data:
+        tags.add(
+            APIC(
+                encoding=3,
+                mime="image/jpeg",
+                type=3,  # front cover
+                desc="Cover",
+                data=metadata.cover_data,
+            )
+        )
+
+    for entry in metadata.credits:
+        tags.add(
+            TXXX(
+                encoding=3,
+                desc=entry.type.upper(),
+                text=[c.name for c in entry.contributors],
+            )
+        )
+
+    # v2.3 has the widest player support (Windows Explorer, iTunes, car stereos)
+    tags.save(track_path, v2_version=3)
+
+
 def sort_credits_contributors(
     entries: list[AlbumItemsCredits.ItemWithCredits.CreditsEntry],
 ):
@@ -179,7 +244,7 @@ def add_track_metadata(
     comment: str = "",
     genre: str = "",
 ) -> None:
-    """Add FLAC or M4A metadata based on file extension."""
+    """Add FLAC, M4A or MP3 metadata based on file extension."""
 
     if credits_contributors is None:
         credits_contributors = []
@@ -211,5 +276,7 @@ def add_track_metadata(
         add_flac_metadata(path, metadata)
     elif ext == ".m4a":
         add_m4a_metadata(path, metadata)
+    elif ext == ".mp3":
+        add_mp3_metadata(path, metadata)
     else:
         raise ValueError(f"Unsupported file extension: {ext}")

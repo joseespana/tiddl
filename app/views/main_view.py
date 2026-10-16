@@ -44,6 +44,19 @@ QUALITY_OPTIONS = [
     ("AAC 96 kbps", "low"),
 ]
 
+# Output container — "original" keeps what Tidal serves (FLAC / M4A).
+FORMAT_OPTIONS = [
+    ("Original format", "original"),
+    ("FLAC", "flac"),
+    ("MP3 320 kbps", "mp3"),
+]
+
+# Tabs backed by a third-party service instead of the Tidal library.
+SERVICE_TABS = ("spotify", "apple_music")
+_SERVICE_LABEL = {"spotify": "Spotify", "apple_music": "Apple Music"}
+# Tabs that show the All / Your Playlists / Liked sub-tab strip.
+_SUBTAB_TABS = ("playlists",) + SERVICE_TABS
+
 # Sidebar sections — each group has a header plus its tab buttons.
 # Flow mirrors the app's purpose: explore your Tidal library → queue
 # downloads → review what's offline → search the catalog for extras.
@@ -68,6 +81,13 @@ SIDEBAR_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ("Search Tidal", "search"),
         ],
     ),
+    (
+        "CONNECTED",
+        [
+            ("Spotify",     "spotify"),
+            ("Apple Music", "apple_music"),
+        ],
+    ),
 ]
 
 # Back-compat flat list (some older code paths iterate this directly).
@@ -84,6 +104,8 @@ _FILTER_PLACEHOLDER = {
     "artists":    "Filter artists…",
     "downloaded": "Filter downloaded…",
     "search":     "Filter results…",
+    "spotify":    "Filter Spotify…",
+    "apple_music": "Filter Apple Music…",
 }
 
 ITEM_HEIGHT = 68
@@ -595,6 +617,9 @@ class MainView(QMainWindow):
     download_pause_requested = Signal()
     download_cancel_requested = Signal()
     detail_requested = Signal(CardVM)
+    service_connect_requested = Signal(str)
+    service_settings_requested = Signal(str)
+    service_disconnect_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -664,6 +689,7 @@ class MainView(QMainWindow):
         lay.addWidget(sep)
 
         logout = QPushButton("Logout")
+        self._logout_btn = logout
         logout.setStyleSheet(
             "QPushButton{background:transparent;border:none;color:#555;"
             "text-align:left;padding:6px 8px;}"
@@ -750,6 +776,9 @@ class MainView(QMainWindow):
 
         # ── Tidal search panel (visible only on Search tab) ───────────────────
         lay.addWidget(self._make_search_panel())
+
+        # ── Spotify / Apple Music connection strip ───────────────────────────
+        lay.addWidget(self._make_service_panel())
 
         # ── Grid of cards ────────────────────────────────────────────────────
         self._grid_columns = 4
@@ -964,6 +993,73 @@ class MainView(QMainWindow):
 
         return self._search_panel
 
+    def _make_service_panel(self) -> QWidget:
+        """Connection status + Connect / Settings / Disconnect buttons."""
+        self._service_panel = QFrame()
+        self._service_panel.setStyleSheet(
+            "background:#181818; border-bottom:1px solid #2a2a2a;"
+        )
+        self._service_panel.setVisible(False)
+        self._service_key = ""
+        row = QHBoxLayout(self._service_panel)
+        row.setContentsMargins(16, 8, 16, 8)
+        row.setSpacing(8)
+
+        self._service_status = QLabel("")
+        self._service_status.setStyleSheet(
+            "color:#999; font-size:12px; background:transparent;"
+        )
+        self._service_status.setWordWrap(True)
+        row.addWidget(self._service_status, 1)
+
+        def _btn(text: str, signal) -> QPushButton:
+            b = QPushButton(text)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(_action_btn_style())
+            b.clicked.connect(lambda: signal.emit(self._service_key))
+            row.addWidget(b)
+            return b
+
+        self._service_connect_btn = _btn("Connect", self.service_connect_requested)
+        self._service_settings_btn = _btn("Settings…", self.service_settings_requested)
+        self._service_disconnect_btn = _btn(
+            "Disconnect", self.service_disconnect_requested
+        )
+        return self._service_panel
+
+    def show_service_panel(
+        self,
+        service: str | None,
+        configured: bool = False,
+        connected: bool = False,
+        account: str = "",
+        busy: bool = False,
+    ) -> None:
+        """Show the connection strip for *service* (``None`` hides it)."""
+        if service is None:
+            self._service_panel.setVisible(False)
+            return
+        self._service_key = service
+        label = _SERVICE_LABEL.get(service, service)
+        if busy:
+            text = f"Waiting for {label} sign-in in your browser…"
+        elif connected:
+            text = (
+                f"Connected as <b>{_html.escape(account)}</b>. Tracks download "
+                "from Tidal (lossless) when you're signed in to Tidal, otherwise "
+                "from YouTube Music."
+            )
+        elif configured:
+            text = f"Not connected. Click Connect to sign in to {label}."
+        else:
+            text = f"Set up {label} credentials first (Settings…)."
+        self._service_status.setText(text)
+        self._service_connect_btn.setVisible(not connected)
+        self._service_connect_btn.setEnabled(configured and not busy)
+        self._service_disconnect_btn.setVisible(connected)
+        self._service_settings_btn.setEnabled(not busy)
+        self._service_panel.setVisible(True)
+
     def _make_bottom(self) -> QWidget:
         bottom = QWidget()
         bottom.setStyleSheet("background:#141414; border-top:1px solid #252525;")
@@ -1003,6 +1099,20 @@ class MainView(QMainWindow):
         )
         row1.addWidget(self._quality_combo)
 
+        self._format_combo = QComboBox()
+        for label, val in FORMAT_OPTIONS:
+            self._format_combo.addItem(label, userData=val)
+        self._format_combo.setToolTip(
+            "Output format. FLAC / MP3 convert every track with ffmpeg after "
+            "download; 'Original' keeps Tidal's FLAC or M4A file."
+        )
+        self._format_combo.setStyleSheet(
+            "QComboBox{background:#222; border:1px solid #333; border-radius:4px;"
+            "padding:4px 8px; color:#ccc; font-size:12px; min-width:120px;}"
+            "QComboBox QAbstractItemView{background:#222; color:#ccc; border:1px solid #444;}"
+        )
+        row1.addWidget(self._format_combo)
+
         self._download_btn = QPushButton("Download Selected")
         self._download_btn.setMinimumHeight(36)
         self._download_btn.setStyleSheet(
@@ -1026,8 +1136,8 @@ class MainView(QMainWindow):
 
         self._url_edit = QLineEdit()
         self._url_edit.setPlaceholderText(
-            "Paste a Tidal URL (playlist/album/artist) or a SoundCloud "
-            "playlist/track URL…"
+            "Paste a Tidal, Spotify, Apple Music or SoundCloud "
+            "playlist/album/track URL…"
         )
         self._url_edit.setStyleSheet(_input_style())
         self._url_edit.returnPressed.connect(self._emit_download_url)
@@ -1183,13 +1293,13 @@ class MainView(QMainWindow):
             _FILTER_PLACEHOLDER.get(tab, "Filter this view…")
         )
         self._search_box.blockSignals(False)
-        # Playlist sub-tabs are only meaningful on the Playlists tab
-        self._pl_subtabs.setVisible(tab == "playlists")
+        # Playlist sub-tabs: Tidal Playlists tab + the connected services
+        self._pl_subtabs.setVisible(tab in _SUBTAB_TABS)
         # Downloaded dashboard strip + Sync Metadata button only on the
         # Downloaded tab.
         self._dl_dashboard.setVisible(tab == "downloaded")
         self._sync_meta_btn.setVisible(tab == "downloaded")
-        if tab == "playlists":
+        if tab in _SUBTAB_TABS:
             # Reset to "All" when (re)entering the tab
             for k, b in self._pl_subtab_btns.items():
                 b.setChecked(k == "all")
@@ -1430,6 +1540,14 @@ class MainView(QMainWindow):
     def get_quality(self) -> str:
         """Return the currently selected quality value."""
         return self._quality_combo.currentData()
+
+    def set_tidal_signed_in(self, signed_in: bool) -> None:
+        """Logout button doubles as "Sign in to Tidal" in no-Tidal mode."""
+        self._logout_btn.setText("Logout" if signed_in else "Sign in to Tidal")
+
+    def get_audio_format(self) -> str:
+        """Return the selected output format (original / flac / mp3)."""
+        return self._format_combo.currentData()
 
     def get_checked_urls(self) -> list[str]:
         """Return URLs for all visible, checked items that have a URL."""

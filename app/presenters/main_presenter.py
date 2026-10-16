@@ -1,4 +1,5 @@
 """Main presenter — orchestrates view, workers and download manager."""
+import dataclasses
 import logging
 from typing import Optional
 
@@ -9,14 +10,22 @@ from app.worker_library import LibraryWorker
 from app.worker_downloaded import DownloadedWorker
 from app.worker_search import SearchWorker
 from app.worker_detail import DetailWorker
+from app.worker_external import ExternalConnectWorker, ExternalLibraryWorker
+from app.integrations.registry import client_for, is_external_url, normalize_url
+from app.integrations.models import PROVIDER_LABEL
+from app.views.service_settings_dialog import ServiceSettingsDialog
+from app.views.main_view import SERVICE_TABS
 from app.models.disk_cache import DiskCache
 from app.models.card_mapper import to_card_vm, compute_downloaded
 from app.models.card_vm import CardVM
 from app.views.detail_dialog import DetailDialog
 from app.downloads.download_manager import DownloadManager, DownloadStatus
-from app.api_client import build_api
+from app.api_client import build_api, is_authenticated
 
 log = logging.getLogger(__name__)
+
+# Tabs that read the user's Tidal account / catalog.
+_TIDAL_TABS = ("playlists", "albums", "artists", "search")
 
 
 class MainPresenter(QObject):
@@ -32,7 +41,9 @@ class MainPresenter(QObject):
     def __init__(self, view: MainView) -> None:
         super().__init__()
         self._view = view
-        self._api = build_api()
+        # None = "no Tidal" mode: only Spotify / Apple Music / SoundCloud work
+        # and their tracks come from YouTube Music.
+        self._api = build_api() if is_authenticated() else None
         self._current_tab = "playlists"
         self._disk_cache: Optional[DiskCache] = None
         self._tracks_done: int = 0
@@ -47,6 +58,10 @@ class MainPresenter(QObject):
         self._detail_worker: Optional[DetailWorker] = None
         self._detail_thread: Optional[QThread] = None
         self._detail_dialog: Optional[DetailDialog] = None
+        self._ext_worker: Optional[ExternalLibraryWorker] = None
+        self._ext_thread: Optional[QThread] = None
+        self._connect_worker: Optional[ExternalConnectWorker] = None
+        self._connect_thread: Optional[QThread] = None
 
         # Threads that have been asked to stop but haven't finished yet.
         # We keep Python references here so the C++ QThread isn't destroyed
@@ -59,7 +74,8 @@ class MainPresenter(QObject):
         self._connect_view()
         self._connect_download_manager()
         self._rebuild_cache()
-        self.load_tab("playlists")
+        self._view.set_tidal_signed_in(self._api is not None)
+        self.load_tab("playlists" if self._api is not None else "spotify")
 
     # ── Signal wiring ─────────────────────────────────────────────────────────
 
@@ -78,6 +94,9 @@ class MainPresenter(QObject):
         self._view.download_pause_requested.connect(self._toggle_pause_download)
         self._view.download_cancel_requested.connect(self._cancel_download)
         self._view.detail_requested.connect(self._open_detail)
+        self._view.service_connect_requested.connect(self._connect_service)
+        self._view.service_settings_requested.connect(self._service_settings)
+        self._view.service_disconnect_requested.connect(self._disconnect_service)
 
     def _connect_download_manager(self) -> None:
         self._dl_manager.log_line.connect(self._on_dl_log_line)
@@ -131,6 +150,14 @@ class MainPresenter(QObject):
         upstream API model to map from.
         """
         if isinstance(vm, CardVM):
+            self._view.add_item(vm)
+
+    def _on_external_card(self, vm: object) -> None:
+        """Deliver a Spotify / Apple Music card, stamping the ✓ badge."""
+        if isinstance(vm, CardVM):
+            vm = dataclasses.replace(
+                vm, is_downloaded=compute_downloaded(vm, self._disk_cache)
+            )
             self._view.add_item(vm)
 
     def _on_dl_log_line(self, _task_id: str, line: str) -> None:
@@ -214,13 +241,28 @@ class MainPresenter(QObject):
 
         self._stop_worker(self._lib_worker, self._lib_thread)
         self._stop_worker(self._downloaded_worker, self._downloaded_thread)
+        self._stop_worker(self._ext_worker, self._ext_thread)
 
         self._current_tab = tab
-        titles = {"search": "Search Tidal", "downloaded": "Downloaded"}
+        titles = {
+            "search": "Search Tidal",
+            "downloaded": "Downloaded",
+            **PROVIDER_LABEL,
+        }
         self._view.set_tab_active(tab)
         self._view.set_tab_title(titles.get(tab, tab.capitalize()))
         self._view.clear_list()
-        self._view.show_search_panel(tab == "search")
+        self._view.show_search_panel(tab == "search" and self._api is not None)
+        if tab not in SERVICE_TABS:
+            self._view.show_service_panel(None)
+
+        if self._api is None and tab in _TIDAL_TABS:
+            self._view.set_loading_text(
+                "This tab needs a Tidal account.\n"
+                "Use Spotify or Apple Music in the sidebar, or click "
+                "\"Sign in to Tidal\" (bottom-left)."
+            )
+            return
 
         if tab == "search":
             self._view.set_loading_text("Enter a search term and press Search.")
@@ -246,6 +288,10 @@ class MainPresenter(QObject):
             self._start_worker(worker, thread)
             return
 
+        if tab in SERVICE_TABS:
+            self._load_service_tab(tab)
+            return
+
         worker = LibraryWorker(self._api, tab)
         thread = QThread()
         worker.item_ready.connect(self._on_item_ready)
@@ -256,9 +302,88 @@ class MainPresenter(QObject):
         self._lib_thread = thread
         self._start_worker(worker, thread)
 
+    # ── Spotify / Apple Music ─────────────────────────────────────────────────
+
+    def _load_service_tab(self, provider: str) -> None:
+        client = client_for(provider)
+        busy = self._connect_worker is not None and \
+            self._connect_worker.provider == provider
+        self._view.show_service_panel(
+            provider,
+            configured=client.is_configured(),
+            connected=client.is_connected(),
+            account=client.account_name,
+            busy=busy,
+        )
+        label = PROVIDER_LABEL[provider]
+        if not client.is_connected():
+            self._view.set_loading_text(
+                f"Connect your {label} account to browse its playlists, albums "
+                "and liked songs.\nTracks download from Tidal in lossless when "
+                "you're signed in to Tidal, otherwise from YouTube Music."
+            )
+            return
+        worker = ExternalLibraryWorker(provider)
+        thread = QThread()
+        worker.card_ready.connect(self._on_external_card)
+        worker.finished.connect(self._on_library_loaded)
+        worker.error.connect(self._on_service_error)
+        self._ext_worker = worker
+        self._ext_thread = thread
+        self._start_worker(worker, thread)
+
+    def _reload_if_current(self, provider: str) -> None:
+        if self._current_tab == provider:
+            self._current_tab = ""
+            self.load_tab(provider)
+
+    def _service_settings(self, provider: str) -> None:
+        if ServiceSettingsDialog(provider, self._view).exec():
+            self._reload_if_current(provider)
+
+    def _connect_service(self, provider: str) -> None:
+        if self._connect_worker is not None:
+            return
+        worker = ExternalConnectWorker(provider)
+        thread = QThread()
+        worker.connected.connect(self._on_service_connected)
+        worker.error.connect(self._on_service_connect_error)
+        worker.finished.connect(self._on_connect_finished)
+        self._connect_worker = worker
+        self._connect_thread = thread
+        self._start_worker(worker, thread)
+        self._view.show_service_panel(provider, configured=True, busy=True)
+
+    def _on_connect_finished(self) -> None:
+        self._connect_worker = None
+        self._connect_thread = None
+
+    def _on_service_connected(self, provider: str, _account: str) -> None:
+        self._connect_worker = None
+        self._reload_if_current(provider)
+
+    def _on_service_connect_error(self, provider: str, msg: str) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        self._connect_worker = None
+        self._reload_if_current(provider)
+        QMessageBox.warning(
+            self._view, f"{PROVIDER_LABEL[provider]} sign-in", msg
+        )
+
+    def _disconnect_service(self, provider: str) -> None:
+        client_for(provider).disconnect()
+        self._reload_if_current(provider)
+
+    def _on_service_error(self, msg: str) -> None:
+        # Kept apart from _on_library_error: a Spotify/Apple failure must
+        # never trigger the Tidal re-login flow.
+        self._view.set_loading_text(f"\u26a0 {msg}")
+
     # ── Search ────────────────────────────────────────────────────────────────
 
     def _run_tidal_search(self, query: str, search_type: str) -> None:
+        if self._api is None:
+            return
         self._stop_worker(self._search_worker, self._search_thread)
         self._view.clear_list()
         self._view.set_loading_text(f'Searching "{query}"…')
@@ -276,6 +401,9 @@ class MainPresenter(QObject):
     def _open_detail(self, vm: CardVM) -> None:
         """Open the detail dialog for *vm* and spawn a worker to populate it."""
         if not vm or not vm.ident:
+            return
+        if is_external_url(vm.url) or self._api is None:
+            # No Tidal detail to show until the collection is matched.
             return
         # Park any in-flight detail worker so it doesn't race against the new one.
         self._stop_worker(self._detail_worker, self._detail_thread)
@@ -324,7 +452,10 @@ class MainPresenter(QObject):
         self._view.set_download_btn_text(f"Downloading… (0/{len(urls)})")
         self._tracks_done = 0
         self._dl_manager.enqueue(
-            urls, self._view.get_download_path(), self._view.get_quality()
+            urls,
+            self._view.get_download_path(),
+            self._view.get_quality(),
+            audio_format=self._view.get_audio_format(),
         )
 
     def _download_url(self, url: str) -> None:
@@ -335,13 +466,42 @@ class MainPresenter(QObject):
         """
         if not url:
             return
+        # Spotify / Apple Music share links → pseudo-URL routed to the
+        # match-on-Tidal runnable.
+        url = normalize_url(url) or url
+        if is_external_url(url):
+            from PySide6.QtWidgets import QMessageBox
+            from app.integrations.registry import provider_of
+            provider = provider_of(url)
+            client = client_for(provider)
+            needs_login = not url.startswith("applemusic:catalog-")
+            if not client.is_configured() or (needs_login and not client.is_connected()):
+                QMessageBox.information(
+                    self._view, PROVIDER_LABEL[provider],
+                    f"Connect {PROVIDER_LABEL[provider]} first from its tab "
+                    "in the sidebar.",
+                )
+                return
+        else:
+            from app.downloads.soundcloud_runnable import is_soundcloud_url
+            if self._api is None and not is_soundcloud_url(url):
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self._view, "Tidal",
+                    "Tidal links need a Tidal account. Sign in to Tidal, or "
+                    "paste a Spotify / Apple Music / SoundCloud link.",
+                )
+                return
         self._dl_manager.clear()
         self._view.show_progress_bar(1)
         self._view.show_log()
         self._view.set_download_btn_enabled(False)
         self._tracks_done = 0
         self._dl_manager.enqueue(
-            [url], self._view.get_download_path(), self._view.get_quality()
+            [url],
+            self._view.get_download_path(),
+            self._view.get_quality(),
+            audio_format=self._view.get_audio_format(),
         )
 
     def _on_task_updated(self, task) -> None:
@@ -467,10 +627,22 @@ class MainPresenter(QObject):
         """
         from PySide6.QtWidgets import QMessageBox
 
+        if self._api is None:
+            QMessageBox.information(
+                self._view, "Sync Metadata",
+                "Sync Metadata refreshes tags from Tidal — sign in to Tidal first.",
+            )
+            return
+
         try:
             from app.models.index_db import IndexDB
             with IndexDB(self._view.get_download_path()) as db:
-                urls = db.list_urls()
+                # Only Tidal rows can be re-tagged by tiddl; SoundCloud /
+                # Spotify / Apple Music rows would trigger a re-download.
+                urls = [
+                    e["url"] for e in db.list_entries(provider="tidal")
+                    if e["url"]
+                ]
         except Exception as exc:
             log.warning("sync-metadata: reading index failed: %s", exc)
             QMessageBox.warning(
@@ -509,6 +681,7 @@ class MainPresenter(QObject):
             self._view.get_download_path(),
             self._view.get_quality(),
             rewrite_metadata=True,
+            audio_format=self._view.get_audio_format(),
         )
 
     # ── Folder browse ─────────────────────────────────────────────────────────
@@ -530,8 +703,9 @@ class MainPresenter(QObject):
         from app.auth_window import AuthWindow
 
         dlg = AuthWindow(self._view)
-        if dlg.exec():
+        if dlg.exec() == AuthWindow.DialogCode.Accepted:
             self._api = build_api()
+            self._view.set_tidal_signed_in(True)
             # Force reload of current tab by clearing the sentinel
             saved_tab = self._current_tab
             self._current_tab = ""
@@ -549,6 +723,8 @@ class MainPresenter(QObject):
             (self._downloaded_worker, self._downloaded_thread),
             (self._search_worker, self._search_thread),
             (self._detail_worker, self._detail_thread),
+            (self._ext_worker, self._ext_thread),
+            (self._connect_worker, self._connect_thread),
         ]:
             try:
                 if worker:

@@ -15,6 +15,7 @@ VALID_M3U_RESOURCE_LITERAL = Literal["album", "playlist", "mix"]
 VALID_RESOURCE_COVER_SAVE_LITERAL = Literal["track", "album", "playlist"]
 VIDEOS_FILTER_LITERAL = Literal["none", "only", "allow"]
 ATMOS_FILTER_LITERAL = Literal["none", "only", "allow"]
+AUDIO_FORMAT_LITERAL = Literal["original", "flac", "mp3"]
 
 log = getLogger(__name__)
 
@@ -59,6 +60,9 @@ class Config(BaseModel):
         write_lrc_file: bool = False
         match_existing_path_case: bool = False
         atmos_filter: ATMOS_FILTER_LITERAL = "none"
+        # "original" keeps whatever Tidal serves (FLAC / M4A); "flac" and
+        # "mp3" transcode every track with ffmpeg after download.
+        audio_format: AUDIO_FORMAT_LITERAL = "original"
 
         def model_post_init(self, __context):
             # set scan path to download path when download path is non default

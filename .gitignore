@@ -166,3 +166,7 @@ cython_debug/
 
 # UV
 uv.lock
+
+# Local reference checkouts (not part of tiddl)
+ref/
+SpotiFLAC/

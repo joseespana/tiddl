@@ -2,6 +2,8 @@
 
 Download tracks and videos from Tidal with max quality! `tiddl` ships with **two interfaces** — a CLI (original) and a modern desktop GUI built with PySide6. Pick whichever fits your workflow.
 
+The GUI also works **without a Tidal account**: connect your **Spotify** or **Apple Music** library and download your playlists, albums and liked songs. With Tidal they come in lossless, otherwise from YouTube Music. SoundCloud links work too, and every download can be saved as **FLAC** or **MP3**.
+
 > [!WARNING]
 > `This app is for personal use only and is not affiliated with Tidal. Users must ensure their use complies with Tidal's terms of service and local copyright laws. Downloaded tracks are for personal use and may not be shared or redistributed. The developer assumes no responsibility for misuse of this app.`
 
@@ -17,7 +19,7 @@ Download tracks and videos from Tidal with max quality! `tiddl` ships with **two
 > You also need [`ffmpeg`](https://ffmpeg.org/download.html) on your PATH — it converts downloaded tracks to their final format. On macOS: `brew install ffmpeg`. On Windows: download from ffmpeg.org and add the `bin/` folder to PATH, or `winget install ffmpeg`. On Linux: `sudo apt install ffmpeg` / equivalent.
 
 > [!NOTE]
-> **Optional — SoundCloud support.** Paste a SoundCloud playlist or track URL into the GUI's *Direct URL* field and tiddl will route it through [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) instead of Tidal. Install it once: `brew install yt-dlp` (macOS), `pip install yt-dlp` (any OS), or `winget install yt-dlp`. Files land alongside your Tidal downloads as `<uploader>/<playlist>/NN. <title>.mp3`, with a matching `m3u/<playlist>.m3u` so the playlist shows up in the **Downloaded** tab the same way Tidal playlists do.
+> **Optional — [`yt-dlp`](https://github.com/yt-dlp/yt-dlp)** is needed for SoundCloud links and for Spotify / Apple Music tracks fetched from YouTube Music (no Tidal account, or tracks Tidal doesn't have). Install it once: `brew install yt-dlp` (macOS), `pip install yt-dlp` (any OS), or `winget install yt-dlp`.
 
 ## Using pip (any OS)
 
@@ -67,7 +69,7 @@ Both share the same auth tokens and config (`~/.tiddl/` on macOS/Linux, `%USERPR
 
 ## GUI (desktop app)
 
-The GUI lets you browse your Tidal library (Your Playlists, Liked Playlists, Albums, Artists), see which items are already downloaded, re-download, and watch per-track progress in real time.
+The GUI lets you browse your Tidal library (Your Playlists, Liked Playlists, Albums, Artists) and your Spotify / Apple Music libraries, see which items are already downloaded, re-download, and watch per-track progress in real time.
 
 ### Requirements
 
@@ -120,15 +122,52 @@ python -m app.main
 
 On first launch a "Connect with Tidal" dialog opens: click the button, approve in your browser, and the app remembers your session in `~/.tiddl/auth.json` (or `%USERPROFILE%\.tiddl\auth.json` on Windows).
 
+No Tidal subscription? Click **Continue without Tidal (Spotify / Apple Music)** instead — the Tidal tabs stay locked and you can sign in later from the bottom-left of the sidebar.
+
 ### Features
 
-- Sidebar tabs: **Playlists** · **Albums** · **Artists** · **Downloaded** · **Search Tidal**
+- Sidebar tabs: **Playlists** · **Albums** · **Artists** · **Downloaded** · **Search Tidal** · **Spotify** · **Apple Music**
 - Playlists sub-tabs: **All** · **Your Playlists** (created by you, paginated) · **Liked** (favorited)
 - Type pills on every row (PLAYLIST / ALBUM / ARTIST) and a ✓ Downloaded badge for items already on disk
 - Real-time download status card: current track, quality, N/M items, track counter
 - Concurrent downloads (3 in parallel by default) via `QThreadPool`
 - Auto re-login when your Tidal token expires
 - Auto-refresh of the Downloaded tab when a download finishes
+- **Direct URL** field: Tidal, Spotify, Apple Music and SoundCloud links
+- Output format selector: **Original** · **FLAC** · **MP3 320 kbps**
+- Pause / Cancel the queue, and **Sync Metadata** to re-tag existing downloads
+
+### Spotify & Apple Music
+
+Neither Spotify nor Apple Music lets anyone download their DRM-protected audio, so tiddl only *reads* your library from them and fetches each track elsewhere:
+
+| | Source | Quality |
+|---|---|---|
+| Signed in to Tidal | the matching Tidal track (ISRC first, then title / artist / duration) | lossless FLAC (up to Hi-Res) |
+| No Tidal account, or the track isn't on Tidal | YouTube Music via `yt-dlp` (duration-checked, skips karaoke / covers / sped-up versions) | lossy, ~160–256 kbps (FLAC only changes the container) |
+
+Playlists land in `Spotify/<playlist>/` or `Apple Music/<playlist>/` with an `m3u/<playlist>.m3u`; tracks no source had are listed in `_not_found.txt`. Albums matched on Tidal are saved with tiddl's normal album layout.
+
+**Spotify setup**
+
+1. Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) (Web API).
+2. Add `http://127.0.0.1:8888/callback` as a Redirect URI.
+3. In tiddl open **Spotify → Settings…**, paste the app's Client ID, then click **Connect** and approve in the browser.
+
+> [!NOTE]
+> Spotify apps in development mode only accept users you add to the app's allowlist in the dashboard.
+
+**Apple Music setup**
+
+1. Create a MusicKit key in your [Apple Developer account](https://developer.apple.com/account/resources/authkeys/list) and download the `.p8` file.
+2. In tiddl open **Apple Music → Settings…** and fill Team ID, Key ID and the `.p8` file — tiddl signs the developer token locally (or paste a ready-made developer token).
+3. Click **Connect** and sign in with your Apple ID in the page that opens.
+
+Packaged builds can ship their own credentials with the `TIDDL_SPOTIFY_CLIENT_ID` / `TIDDL_APPLE_DEVELOPER_TOKEN` environment variables, so end users only click **Connect**. Credentials and tokens are stored in `~/.tiddl/integrations.json` (readable only by you).
+
+### Output format
+
+Pick **Original**, **FLAC** or **MP3 320 kbps** next to the quality selector. *Original* keeps what Tidal serves (FLAC or M4A); FLAC / MP3 are converted with ffmpeg after download and tagged natively (Vorbis comments for FLAC, ID3v2.3 for MP3, cover included). On the CLI use `tiddl download -f mp3 …` / `-f flac`, or set `audio_format` under `[download]` in `config.toml`.
 
 ### Screenshot
 

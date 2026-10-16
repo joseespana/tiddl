@@ -83,3 +83,38 @@ def extract_flac(source: Path) -> Path:
         source.unlink()
 
     return target
+
+
+_AUDIO_CODEC_ARGS: dict[str, list[str]] = {
+    "flac": ["-c:a", "flac"],
+    # -ac 2 downmixes multichannel (Dolby Atmos) sources; ffmpeg picks a
+    # sample rate libmp3lame supports (<= 48 kHz) automatically.
+    "mp3": ["-c:a", "libmp3lame", "-b:a", "320k", "-ac", "2"],
+}
+
+
+def convert_audio(source: Path, audio_format: str) -> Path:
+    """
+    Transcode `source` to `audio_format` ("flac" or "mp3") and delete the source.
+
+    Only the first audio stream is kept; tags are written afterwards by
+    `add_track_metadata`. Returns `source` untouched when it already has
+    the target extension.
+    """
+
+    target = source.with_suffix(f".{audio_format}")
+    if source.suffix.lower() == target.suffix:
+        return source
+
+    tmp = source.with_suffix(f".tmp.{audio_format}")
+
+    run(
+        ["ffmpeg", "-y", "-i", str(source), "-map", "0:a:0", "-vn"]
+        + _AUDIO_CODEC_ARGS[audio_format]
+        + [str(tmp)]
+    )
+
+    tmp.replace(target)
+    source.unlink()
+
+    return target

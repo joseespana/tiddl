@@ -19,6 +19,8 @@ from PySide6.QtCore import QObject, Signal
 
 from tiddl.core.api.api import TidalAPI
 
+from app.downloads.external_runnable import collection_folder
+from app.integrations.models import PROVIDER_LABEL
 from app.models.card_vm import CardVM
 from app.models.index_db import IndexDB
 from app.worker_index import _TIDAL_URL_RE
@@ -53,7 +55,7 @@ class DownloadedWorker(QObject):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, api: TidalAPI, download_path: str) -> None:
+    def __init__(self, api: TidalAPI | None, download_path: str) -> None:
         """Initialise the worker.
 
         Args:
@@ -115,14 +117,39 @@ class DownloadedWorker(QObject):
             ident=sc_url,
         )
 
+    def _build_external_card(self, entry: dict) -> CardVM:
+        """CardVM for a Spotify / Apple Music collection row (offline)."""
+        label = PROVIDER_LABEL.get(entry["provider"], entry["provider"])
+        title = (entry.get("title") or "").strip() or label
+        creator = (entry.get("creator") or "").strip()
+        parts = [p for p in (creator,) if p]
+        if entry["kind"] in ("playlist", "album"):
+            n = self._count_folder_tracks(
+                collection_folder(Path(self.download_path), label, title)
+            )
+            if n:
+                parts.append(f"{n} tracks")
+        parts.append(label)
+        return CardVM(
+            kind="album" if entry["kind"] == "album" else "playlist",
+            title=title,
+            subtitle=" \u00b7 ".join(parts),
+            url=entry["url"] or entry["id"],
+            cover_url=None,
+            is_downloaded=True,
+            source="",
+            ident=entry["url"] or entry["id"],
+        )
+
     def _count_sc_tracks(self, creator: str, title: str) -> int:
         """Best-effort track count for an SC playlist on disk."""
+        return self._count_folder_tracks(
+            Path(self.download_path) / _sanitize(creator) / _sanitize(title)
+        )
+
+    @staticmethod
+    def _count_folder_tracks(folder: Path) -> int:
         try:
-            folder = (
-                Path(self.download_path)
-                / _sanitize(creator)
-                / _sanitize(title)
-            )
             if not folder.is_dir():
                 return 0
             n = 0
@@ -161,11 +188,14 @@ class DownloadedWorker(QObject):
                     vm = self._build_sc_card(entry)
                     if vm is not None:
                         self.card_ready.emit(vm)
+                elif entry["provider"] in PROVIDER_LABEL:
+                    self.card_ready.emit(self._build_external_card(entry))
                 else:
                     if entry["url"]:
                         tidal_urls.append(entry["url"])
 
-            if tidal_urls and not self._interrupted.is_set():
+            # Without a Tidal session (api is None) only local cards show.
+            if tidal_urls and self.api is not None and not self._interrupted.is_set():
                 fanout(
                     self._resolve,
                     tidal_urls,

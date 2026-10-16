@@ -36,6 +36,8 @@ class DownloadTask:
     # audio files are kept but their tags are refreshed from the API.
     # Used by the "Sync Metadata" flow.
     rewrite_metadata: bool = False
+    # "original" | "flac" | "mp3" — passed to tiddl as -f.
+    audio_format: str = "original"
 
 
 class _RunnableSignals(QObject):
@@ -72,6 +74,8 @@ class _DownloadRunnable(QRunnable):
         if self.task.rewrite_metadata:
             # Re-tag existing files without re-downloading audio.
             cmd.append("-r")
+        if self.task.audio_format != "original":
+            cmd += ["-f", self.task.audio_format]
         cmd += ["url", self.task.url]
         proc = None
         try:
@@ -154,6 +158,7 @@ class DownloadManager(QObject):
         download_path: str,
         quality: str,
         rewrite_metadata: bool = False,
+        audio_format: str = "original",
     ) -> List[str]:
         """Add *urls* to the queue and start up to MAX_CONCURRENT immediately.
 
@@ -164,6 +169,7 @@ class DownloadManager(QObject):
             rewrite_metadata: When True, passes ``-r`` to tiddl so each
                 URL's existing audio files are kept and only their tags
                 get refreshed. Used by the Sync Metadata flow.
+            audio_format: ``"original"``, ``"flac"`` or ``"mp3"``.
 
         Returns:
             List of task IDs in the same order as *urls*.
@@ -175,6 +181,7 @@ class DownloadManager(QObject):
                 download_path=download_path,
                 quality=quality,
                 rewrite_metadata=rewrite_metadata,
+                audio_format=audio_format,
             )
             self._tasks[task.id] = task
             ids.append(task.id)
@@ -243,8 +250,9 @@ class DownloadManager(QObject):
         """Build a runnable for *task*, park it pending, then pump the queue.
 
         Routes by URL host: SoundCloud links go through the yt-dlp-backed
-        :class:`_SoundCloudRunnable`; everything else stays on the
-        existing tiddl-CLI pipeline.
+        :class:`_SoundCloudRunnable`; Spotify / Apple Music collections go
+        through :class:`_ExternalRunnable` (match on Tidal, then tiddl);
+        everything else stays on the existing tiddl-CLI pipeline.
         """
         # Local import — keeps download_manager importable in test contexts
         # that don't have the full Qt download stack wired up, and avoids
@@ -253,9 +261,13 @@ class DownloadManager(QObject):
             is_soundcloud_url,
             _SoundCloudRunnable,
         )
+        from app.downloads.external_runnable import _ExternalRunnable
+        from app.integrations.registry import is_external_url
 
         if is_soundcloud_url(task.url):
             runnable: QRunnable = _SoundCloudRunnable(task)
+        elif is_external_url(task.url):
+            runnable = _ExternalRunnable(task)
         else:
             runnable = _DownloadRunnable(task)
         runnable.signals.log_line.connect(self._on_log_line)

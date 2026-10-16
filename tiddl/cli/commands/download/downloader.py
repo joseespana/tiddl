@@ -7,7 +7,11 @@ from tempfile import NamedTemporaryFile
 import aiofiles
 import aiohttp
 
-from tiddl.cli.config import VIDEOS_FILTER_LITERAL, ATMOS_FILTER_LITERAL
+from tiddl.cli.config import (
+    VIDEOS_FILTER_LITERAL,
+    ATMOS_FILTER_LITERAL,
+    AUDIO_FORMAT_LITERAL,
+)
 from tiddl.cli.utils.download import get_existing_track_filename
 from tiddl.cli.utils.path import resolve_existing_path_case
 from tiddl.core.api import ApiError, TidalAPI
@@ -19,7 +23,7 @@ from tiddl.core.utils.const import (
     track_qualities,
     video_qualities,
 )
-from tiddl.core.utils.ffmpeg import convert_to_mp4, extract_flac
+from tiddl.core.utils.ffmpeg import convert_audio, convert_to_mp4, extract_flac
 
 from .output import RichOutput
 
@@ -53,6 +57,7 @@ class Downloader:
     scan_path: Path
     match_existing_path_case: bool
     dolby_atmos_filter: ATMOS_FILTER_LITERAL
+    audio_format: AUDIO_FORMAT_LITERAL
 
     def __init__(
         self,
@@ -67,6 +72,7 @@ class Downloader:
         scan_path: Path,
         match_existing_path_case: bool = False,
         dolby_atmos_filter: ATMOS_FILTER_LITERAL = "none",
+        audio_format: AUDIO_FORMAT_LITERAL = "original",
     ) -> None:
         self.api = tidal_api
         self.rich_output = rich_output
@@ -79,6 +85,7 @@ class Downloader:
         self.scan_path = scan_path
         self.match_existing_path_case = match_existing_path_case
         self.dolby_atmos_filter = dolby_atmos_filter
+        self.audio_format = audio_format
 
     def get_path(self, base_path: Path, relative_path: Path) -> Path:
         if self.match_existing_path_case:
@@ -102,9 +109,12 @@ class Downloader:
             return None, False
 
         if isinstance(item, Track):
-            filename = get_existing_track_filename(
-                item.audioQuality, self.track_quality, file_path
-            )
+            if self.audio_format == "original":
+                filename = get_existing_track_filename(
+                    item.audioQuality, self.track_quality, file_path
+                )
+            else:
+                filename = file_path.with_suffix(f".{self.audio_format}")
             existing_file_path = self.get_path(self.scan_path, filename)
             vibrant_color = item.album.vibrantColor
 
@@ -237,6 +247,15 @@ class Downloader:
                     download_path = convert_to_mp4(download_path)
             except Exception as exc:
                 log.error(f"{should_extract_flac=}, {exc=}")
+
+            if isinstance(item, Track) and self.audio_format != "original":
+                try:
+                    download_path = convert_audio(download_path, self.audio_format)
+                except Exception as exc:
+                    log.error(f"{self.audio_format=}, {exc=}")
+                    self.rich_output.console.print(
+                        f"[red]Could not convert[/] {item.title} to {self.audio_format.upper()}, kept {download_path.suffix}"
+                    )
 
             task = self.rich_output.download_finish(
                 task_id=task_id,

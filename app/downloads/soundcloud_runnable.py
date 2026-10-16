@@ -80,6 +80,7 @@ class _SoundCloudRunnable(QRunnable):
         self._playlist_title: Optional[str] = None
         self._uploader: Optional[str] = None
         self._track_files: list[str] = []
+        self._ext = "mp3"
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -112,6 +113,8 @@ class _SoundCloudRunnable(QRunnable):
         else:
             out_tpl = "%(uploader)s/Singles/%(title)s.%(ext)s"
 
+        sc_format = "flac" if self.task.audio_format == "flac" else "mp3"
+        self._ext = sc_format
         cmd = [
             ytdlp,
             "--no-overwrites",
@@ -120,7 +123,8 @@ class _SoundCloudRunnable(QRunnable):
             "--ignore-errors",
             # Audio extraction
             "--extract-audio",
-            "--audio-format", "mp3",
+            # SoundCloud streams are lossy, so "original" means MP3 here.
+            "--audio-format", sc_format,
             "--audio-quality", "0",
             "--embed-thumbnail",
             "--add-metadata",
@@ -212,7 +216,7 @@ class _SoundCloudRunnable(QRunnable):
             # Emit a "Downloaded ..." line in the same shape tiddl uses
             # so MainPresenter._on_dl_log_line increments the counter.
             self.signals.log_line.emit(
-                self.task.id, f"Downloaded {title}  mp3",
+                self.task.id, f"Downloaded {title}  {self._ext}",
             )
             return
 

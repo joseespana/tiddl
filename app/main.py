@@ -21,7 +21,9 @@ def main():
 
     if not is_authenticated():
         auth_dlg = AuthWindow()
-        if auth_dlg.exec() != AuthWindow.DialogCode.Accepted:
+        if auth_dlg.exec() not in (
+            AuthWindow.DialogCode.Accepted, AuthWindow.SKIPPED,
+        ):
             sys.exit(0)
 
     window = MainWindow()

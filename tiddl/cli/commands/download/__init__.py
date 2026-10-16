@@ -21,6 +21,7 @@ from tiddl.cli.config import (
     VALID_M3U_RESOURCE_LITERAL,
     VIDEOS_FILTER_LITERAL,
     ATMOS_FILTER_LITERAL,
+    AUDIO_FORMAT_LITERAL,
 )
 from tiddl.cli.utils.resource import TidalResource
 from tiddl.cli.ctx import Context
@@ -135,6 +136,14 @@ def download_callback(
             help="Dolby Atmos filter, 'none' to exclude, 'allow' to include, 'only' to download only Dolby Atmos, if available.",
         ),
     ] = CONFIG.download.atmos_filter,
+    AUDIO_FORMAT: Annotated[
+        AUDIO_FORMAT_LITERAL,
+        typer.Option(
+            "--format",
+            "-f",
+            help="Output audio format: 'original' keeps Tidal's file, 'flac' or 'mp3' converts with ffmpeg.",
+        ),
+    ] = CONFIG.download.audio_format,
 ):
     """
     Download Tidal resources.
@@ -218,6 +227,7 @@ def download_callback(
             scan_path=SCAN_PATH,
             match_existing_path_case=CONFIG.download.match_existing_path_case,
             dolby_atmos_filter=DOLBY_ATMOS_FILTER,
+            audio_format=AUDIO_FORMAT,
         )
 
         class Metadata:

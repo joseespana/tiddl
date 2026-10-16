@@ -71,6 +71,8 @@ class DiskCache:
 
         self._refresh_lock = threading.Lock()
         self._refresh_thread: Optional[threading.Thread] = None
+        # Stays None when the folder doesn't exist yet (first run).
+        self._db = None
 
         base = Path(path)
         if not base.exists():

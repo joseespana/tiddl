@@ -86,10 +86,13 @@ from tiddl.cli.utils.auth.models import AuthData
 
 
 class AuthWindow(QDialog):
+    # exec() result when the user picks "Continue without Tidal".
+    SKIPPED = 2
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("tiddl — Connect to Tidal")
-        self.setFixedSize(460, 390)
+        self.setFixedSize(460, 430)
         self.setModal(True)
 
         self.auth_api = AuthAPI()
@@ -208,9 +211,25 @@ class AuthWindow(QDialog):
         self._action_btn.clicked.connect(self._start_login)
         root.addWidget(self._action_btn)
 
+        # Spotify / Apple Music users without a Tidal subscription can
+        # still use the app (tracks then come from YouTube Music).
+        skip_btn = QPushButton("Continue without Tidal (Spotify / Apple Music)")
+        skip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip_btn.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#888;"
+            "font-size:12px;text-decoration:underline;}"
+            "QPushButton:hover{color:#0ff;}"
+        )
+        skip_btn.clicked.connect(self._skip)
+        root.addWidget(skip_btn)
+
         root.addStretch()
 
     # ── Actions ─────────────────────────────────────────────────────────────
+
+    def _skip(self):
+        self._poll_timer.stop()
+        self.done(self.SKIPPED)
 
     def _start_login(self):
         self._action_btn.setEnabled(False)
